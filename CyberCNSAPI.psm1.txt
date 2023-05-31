@@ -1,0 +1,4210 @@
+<#
+.SYNOPSIS
+
+Performs a GET on an API endpoint, passing optional query parameters, and returns the result as an object.
+
+.DESCRIPTION
+
+This function will call the Manage API at a specified end point and perform a GET operation.
+
+You can pass additional query parameters to refine the query.
+
+The object returned is usually a list of properties, depending on the query.
+
+.PARAMETER Endpoint
+
+The API Endpoint to call, see LINK section in HELP.
+
+.PARAMETER Conditions
+
+Any condition to restrict the records returned, see LINK section in HELP.
+
+.PARAMETER ChildConditions
+
+List of fields to include in the return results, see LINK section in HELP.
+
+.PARAMETER CustomFieldConditions
+
+List of fields to exclude from the return results, see LINK section in HELP.
+
+.PARAMETER Fields
+
+List of fields to return (Not available on the reporting endpoints), see LINK section in HELP.
+
+.PARAMETER Columns
+
+List of columns to return (Only used for the Reporting Endpoints), see LINK section in HELP.
+
+.PARAMETER OrderBy	
+
+Field to order the results by, see LINK section in HELP.
+
+.PARAMETER PageSize
+
+Number of records to return per page (default 25)
+
+.PARAMETER ShowProgress
+
+Show a progress indicator for long running queries
+
+.LINK
+
+https://developer.connectwise.com/Manage/Developer_Guide
+
+.EXAMPLE
+
+Get-CWMObject -Verbose:$False -Endpoint company/companies
+
+.EXAMPLE
+
+Get-CWMObject -Verbose:$False -Endpoint company/configurations/types -Conditions 'name LIKE "ABC%"'
+
+#>
+Function Get-CWMObject {
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory)]
+		[string]$Endpoint,
+
+		[string]$Conditions,
+
+		[string]$ChildConditions,
+
+		[string]$CustomFieldConditions,
+
+		[string]$Fields,
+
+		[string]$Columns,
+
+		[string]$OrderBy,
+
+		[int]$PageSize = 25,
+
+		[switch]$ShowProgress
+	)
+
+	# Initialize the connection if it has expired (or is not active yet)
+	if(-Not (Start-CWMConnection)) {
+		return $null;
+	}
+		
+	# Run the EndPoint paged calls and collect the results
+	$ReturnObject = @();
+	Add-Type -AssemblyName System.Web;
+	$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+	#$Parameters = [Microsoft.AspNetCore.WebUtilities.QueryHelpers]::ParseQuery([String]::Empty);
+	$Request = [System.UriBuilder]($script:cwmURL + '/' + $EndPoint);
+
+	if($Fields) {
+		$Parameters['fields'] = $Fields;
+	}
+
+	if($Conditions) {
+		$Parameters['conditions'] = $Conditions;
+	}
+
+	if($ChildConditions) {
+		$Parameters['childconditions'] = $ChildConditions;
+	}
+
+	if($CustomFieldConditions) {
+		$Parameters['customfieldconditions'] = $CustomFieldConditions;
+	}
+
+	if($Columns) {
+		$Parameters['columns'] = $Columns;
+	}
+
+	if($OrderBy) {
+		$Parameters['orderBy'] = $OrderBy;
+	}
+
+	if($PageSize) {
+		$Parameters['pageSize'] = $PageSize;
+	}
+
+	# Initialize the loop through pages of results (25 rows at a time by default)
+	$i = 1;
+	do {
+
+		Write-Verbose "Fetching records for page $i"
+		$Parameters['page'] = $i;
+		$Request.Query = $Parameters.ToString();
+		$result = Invoke-WebRequest -Uri "$($Request.Uri)" -Method Get -Headers $script:header -ContentType "application/json"
+
+		# Display a progress indicator once we reach the second page
+		if ($i -gt 1) {
+			if ($ShowProgress) { Write-Progress -Activity ("Endpoint: {0}, Page(s): {1}/{2}, Page Size: {3}" -f $Endpoint, $i, $lastPage, $PageSize) -PercentComplete (($i / $lastPage) * 100) }
+		} else {
+			# On the first page only, determine the total number of pages, if provided (otherwise assume one page)
+			if ($result.Headers.Link) {
+				try {
+					$lastPage = [int]((($result.Headers.Link) -split ',' | Where-Object {$_ -like '*rel="last"'} | Select-Object -First 1) -replace '.*page=([0-9]+).*','$1')
+				} catch {
+					$lastPage = 1
+				}
+			}
+		}
+
+		# Fetch the content
+		$content = $result.Content | ConvertFrom-Json
+		if($content) {
+			$ReturnObject += $content;
+		}
+		$i++
+	}
+	while($i -le $lastPage)
+	
+	return $ReturnObject;
+}
+
+
+<#
+.SYNOPSIS
+
+Performs a DELETE on one or more IDs of an API endpoint.
+
+.DESCRIPTION
+
+This function will delete objects from Manage. It calls the DELETE REST method on an endpoint repeatedly for all IDs passed, either via an array of IDs or via Pipeline
+
+.PARAMETER Endpoint
+
+The API Endpoint to call, see LINK section in HELP.
+
+.PARAMETER ID
+
+An ID, an array of IDs or a Pipeline stream of IDs.
+
+.LINK
+
+https://developer.connectwise.com/Manage/Developer_Guide
+
+.EXAMPLE
+
+Remove-CWMObject -Verbose:$False -Endpoint 'service/tickets' -ID 123456
+
+.EXAMPLE
+
+Remove-CWMObject -Verbose:$False -Endpoint 'service/tickets' -ID @(432322,456423)
+
+.EXAMPLE
+
+Get-CWMObject -Verbose:$False -Endpoint 'service/tickets' -Conditions 'id < 1000' | Select-Object -ExpandProperty ID | Remove-CWMObject -Verbose:$False -Endpoint 'service/tickets'
+
+#>
+Function Remove-CWMObject {
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory)]
+		[string]$Endpoint,
+
+		[Parameter(Mandatory, ValueFromPipeline)]
+		[string]$ID
+
+	)
+
+	# Initialize the connection if it has expired (or is not active yet)
+	BEGIN {
+
+		if(-Not (Start-CWMConnection)) {
+			return $null;
+		}
+
+		$ReturnObject = @();
+	}
+
+	# Run the EndPoint paged calls and collect the results
+	PROCESS {
+
+		if(($ID + 0) -gt 0) {
+
+			Add-Type -AssemblyName System.Web;
+			$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+			#$Parameters = [Microsoft.AspNetCore.WebUtilities.QueryHelpers]::ParseQuery([String]::Empty);
+			$Request = [System.UriBuilder]($script:cwmURL + '/' + $EndPoint + '/' + $ID);
+
+			$Request.Query = $Parameters.ToString();
+
+#			$result = "URI: $($Request.Uri)";
+			
+			$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Delete -Headers $script:header -ContentType "application/json";
+
+			if($result) {
+				$returnobject += $result;
+			}
+
+		} else {
+
+			Write-Error "Unable to process zeroed ID ${$ID}";
+			return $null;
+
+		}
+
+	}
+
+	END {
+		return $ReturnObject;
+	}
+}
+
+
+<#
+.SYNOPSIS
+
+Performs a POST on one or more IDs of an API endpoint.
+
+.DESCRIPTION
+
+This function will add a new object to Manage.
+
+.PARAMETER Endpoint
+
+The API Endpoint to call, see LINK section in HELP.
+
+.PARAMETER Data
+
+A data block describing the object to add.
+
+.LINK
+
+https://developer.connectwise.com/Manage/Developer_Guide
+
+.EXAMPLE
+
+Add-CWMObject -Verbose:$False -Endpoint 'service/tickets' -Data $json
+
+#>
+Function Add-CWMObject {
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory)]
+		[string]$Endpoint,
+
+		[Parameter(Mandatory)]
+		[Object]$Data
+
+	)
+
+	if(-Not (Start-CWMConnection)) {
+		return $null;
+	}
+
+	# Convert source object to JSON (stop here if there is an error)
+	$PostOperationJSON = $Data | ConvertTo-Json -Compress -ErrorAction Stop
+
+	$ReturnObject = @();
+
+	# All the parameters are correct, add the Configuration
+	Add-Type -AssemblyName System.Web;
+	$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+	$Request = [System.UriBuilder]($script:cwmURL + '/' + $EndPoint);
+	$Request.Query = $Parameters.ToString();
+
+	# Need to remove extra brackets generated by PS
+	$PostOperationJSON = $PostOperationJSON -replace '^\[','' -replace '\]$',''
+
+	# Post a new Configuration and bail if there is an error
+	$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Post -Body $PostOperationJSON -Headers $script:header -ContentType "application/json" -ErrorAction Stop
+
+	if($result) {
+		$returnobject += $result;
+	}
+
+	return $ReturnObject;
+}
+
+<#
+.SYNOPSIS
+
+Performs a PATCH on one ID of an API endpoint.
+
+.DESCRIPTION
+
+This function will update one or more field of a single object
+
+.PARAMETER Endpoint
+
+The API Endpoint to call, see LINK section in HELP.
+The Endpoint URI must contain the ID(s) involved in updating the object. 
+
+.PARAMETER Data
+
+A JSON formatted data block describing the field(s) to update.
+
+.LINK
+
+https://developer.connectwise.com/Manage/Developer_Guide
+
+.EXAMPLE
+
+Update-CWMObject -Verbose:$False -Endpoint '/company/companies/234/sites/7' -Data $json
+
+#>
+Function Update-CWMObject {
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory)]
+		[string]$Endpoint,
+
+		[Parameter(Mandatory)]
+		[Object]$Data
+	)
+
+	if(-Not (Start-CWMConnection)) {
+		return $null;
+	}
+
+	# Convert source object to JSON (stop here if there is an error)
+	$PatchOperationJSON = $Data | ConvertTo-Json -Compress -ErrorAction Stop
+
+	# Need to add extra brackets if missing
+	$PatchOperationJSON = $PatchOperationJSON -replace '^\{','[{' -replace '\}$','}]'
+
+	$ReturnObject = @();
+
+	# All the parameters are correct, add the Configuration
+	Add-Type -AssemblyName System.Web;
+	$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+	$Request = [System.UriBuilder]($script:cwmURL + '/' + $EndPoint);
+	$Request.Query = $Parameters.ToString();
+
+	# Patch the object and bail if there is an error
+	$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Patch -Body $PatchOperationJSON -Headers $script:header -ContentType "application/json" -ErrorAction Stop
+
+	if($result) {
+		$returnobject += $result;
+	}
+
+	return $ReturnObject;
+}
+
+
+Function Update-CWMSiteName {
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory)]
+		[string]$CompanyID,
+
+		[Parameter(Mandatory)]
+		[string]$SiteID,
+
+		[Parameter(Mandatory)]
+		[string]$SiteName
+
+	)
+
+
+	if(-Not (Start-CWMConnection)) {
+		return $null;
+	}
+
+	if((($CompanyID + 0) -gt 0) -and (($SiteID + 0) -gt 0)) {
+
+		Add-Type -AssemblyName System.Web;
+		$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+		$Request = [System.UriBuilder]($script:cwmURL + '/company/companies/' + $CompanyID + '/sites/' + $SiteID);
+
+		$PatchOperation = '[{"op": "replace", "path": "/name", "value": "' + $SiteName + '"}]';
+
+		$Request.Query = $Parameters.ToString();
+
+		$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Patch -Body $PatchOperation -Headers $script:header -ContentType "application/json";
+
+		if($result) {
+			$returnobject += $result;
+		}
+
+	} else {
+
+		Write-Error "CommpanyID and Site can't be zero";
+		return $null;
+
+	}
+
+	return $ReturnObject;
+}
+
+Function Set-CWMProjectTicketNotifications {
+	<#
+	.SYNOPSIS
+
+	Set the "Send Notes as Email" flags for one or more Project tickets
+
+	.DESCRIPTION
+
+	This function will check or uncheck the email communication flags for Contacts, Resources and CCs in the "Send Notes as Email" section of one or more Project Tickets
+
+	.PARAMETER ID
+
+	Either the ID of the Project Ticket or an object representing the Project Ticket with an ID property.
+
+	.PARAMETER EmailContact
+
+	Whether Contacts should receive ticket notes via email.
+	If absent the flag remain unchanged on the ticket.
+	If present, can be set to $True or $False
+
+	.PARAMETER EmailResource
+
+	Whether Resources should receive ticket notes via email.
+	If absent the flag remain unchanged on the ticket.
+	If present, can be set to $True or $False
+
+	.PARAMETER EmailCC
+
+	Whether CCs should receive ticket notes via email.
+	If absent the flag remain unchanged on the ticket.
+	If present, can be set to $True or $False
+
+	.PARAMETER EmailCCRecipient
+
+	The recipient to add as a CC.
+	Must be a valid email address
+
+	.EXAMPLE
+
+	Set-CWMProjectTicketNotifications -id 123456 -EmailContact $true -EmailResource -$true -EmailCC $true
+
+	Will set all flags on Project ticket 123456
+
+	.EXAMPLE
+
+	Get-CWMObject 'project/tickets' -Conditions 'status/name = "open" AND board/name = "Projects" AND automaticEmailResourceFlag = False' | Set-CWMProjectTicketNotifications -EmailResource $true
+
+	Will set the Email Resource flag on all Project tickets that are still open and do not currently have the Email Resource flag set
+
+	#>
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory,ValueFromPipeline)]
+		[Object]$id,
+
+		[Object]$EmailContact,
+		[Object]$EmailResource,
+		[Object]$EmailCC,
+		[String]$EmailCCRecipient = 'X',
+
+		[switch]$PassThru
+	)
+
+	Begin {
+		if(-Not (Start-CWMConnection)) {
+			return $null
+		}
+		$returnobject = @()
+
+
+		$PatchOperation = @()
+
+		if (($EmailContact -eq $true) -or ($EmailContact -eq $false)) {
+			$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/automaticEmailContactFlag'; 'value' = $EmailContact.ToString()}
+		}
+		if (($EmailResource -eq $true) -or ($EmailResource -eq $false)) {
+			$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/automaticEmailResourceFlag'; 'value' = $EmailResource.ToString()}
+		}
+		if (($EmailCC -eq $true) -or ($EmailCC -eq $false)) {
+			$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/automaticEmailCcFlag'; 'value' = $EmailCC.ToString()}
+		}
+		if ($EmailCCRecipient -ne 'X') {
+			$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/automaticEmailCc'; 'value' = $EmailCCRecipient.ToString()}
+		}
+
+		if ($PatchOperation.Count -gt 0) {
+			$PatchOperationJSON = ConvertTo-Json -Compress $PatchOperation
+		} else {
+			Write-Warning 'No flag was passed, no operation to perform, specify at least one of EmailContact, EmailResource or EmailCC paramaters'
+			return $null
+		}
+	}
+
+	Process {
+
+		# Determine whether we were passed an ID or an entire Ticket object (with an ID property)
+		if ($id.id) {
+			$ticketID = $id.id
+		} else {
+			$ticketID = $id
+		}
+
+		if (($ticketID + 0) -gt 0) {
+
+			Add-Type -AssemblyName System.Web;
+			$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+			$Request = [System.UriBuilder]($script:cwmURL + '/project/tickets/' + $ticketID);
+			$Request.Query = $Parameters.ToString();
+
+			$result = $null
+			if ($PatchOperationJSON) {
+				$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Patch -Body $PatchOperationJSON -Headers $script:header -ContentType "application/json";
+			}
+
+			if($result) {
+				$returnobject += $result
+			}
+
+		} else {
+
+			Write-Error "TicketID can't be zero"
+			return $null
+
+		}
+	}
+
+	End {
+		# Pass the object(s) down to the pipeline if we are chaining calls
+		if ($PassThru) {
+			return $returnobject
+		} else {
+			return $null
+		}
+	}
+}
+
+Function Set-CWMServiceTicketAgreement {
+	<#
+	.SYNOPSIS
+
+	Set the Agreement and optionally the default Work Role / Work Type for one or more Service tickets
+
+	.DESCRIPTION
+
+	This function will set the Agreement for one or more Service Tickets
+
+	.PARAMETER ID
+
+	Either the ID of the Service Ticket or an object representing the Service Ticket with an ID property.
+
+	.PARAMETER AgreementID
+
+	Either the ID of an Agreement or an object representing an Agreement with an ID property. Passing this parameter with an explicit value of 0 removes the agreement
+
+	.PARAMETER WorkRoleID
+
+	Either the ID of a Work Role or an object representing a Work Role with an ID property.
+
+	.PARAMETER WorkTypeID
+
+	Either the ID of a Work Type or an object representing a Work Type with an ID property.
+
+	.EXAMPLE
+
+	Set-CWMServiceTicketAgreement -ID 123456 -AgreementID 4563
+
+	Will assign Agreement with ID 4563 to Service Ticket 123456
+
+	.EXAMPLE
+
+	$agr = Get-CWMObject '/finance/agreements' -Conditions 'name LIKE "Acme" AND type/name LIKE "*msp*"' | Select-Object -First 1
+	Get-CWMObject -Endpoint 'service/tickets' -Conditions "company/name LIKE 'Acme' AND board/name LIKE 'Service*' AND status/name NOT LIKE 'Closed' AND status/name NOT LIKE 'Shelved' AND agreement/id = NULL" |  Set-CWMServiceTicketAgreement -AgreementID $agr
+
+	Will assign the first Agreement of type *msp* to all open Service Tickets for company Acme
+
+	#>
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory,ValueFromPipeline)]
+		[Object]$ID,
+		[Object]$AgreementID,
+		[Object]$WorkRoleID,
+		[Object]$WorkTypeID,
+		[switch]$PassThru
+	)
+
+	Begin {
+		if(-Not (Start-CWMConnection)) {
+			return $null
+		}
+		$returnobject = @()
+
+
+		$PatchOperation = @()
+
+		# Determine whether we were passed an AgreementID or an entire Agreement object (with an ID property)
+		if ($AgreementID.id) {
+			$AgrID = $AgreementID.id
+		} else {
+			$AgrID = $AgreementID
+		}
+		if (($AgrID + 0) -gt 0) {
+			$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/agreement/id'; 'value' = $AgrID.ToString()}
+		} elseif ($AgrID -eq 0) {
+			$PatchOperation += [PSCustomObject]@{'op' = 'remove'; 'path' = '/agreement'}
+		}
+
+		# Determine whether we were passed an WorkRoleID or an entire WorkRole object (with an ID property)
+		if ($WorkRoleID.id) {
+			$WrID = $WorkRoleID.id
+		} else {
+			$WrID = $WorkRoleID
+		}
+		if (($WrID + 0) -gt 0) {
+			$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/workRole/id'; 'value' = $WrID.ToString()}
+		}
+
+		# Determine whether we were passed an WorkTypeID or an entire WorkType object (with an ID property)
+		if ($WorkTypeID.id) {
+			$WtID = $WorkTypeID.id
+		} else {
+			$WtID = $WorkTypeID
+		}
+		if (($WtID + 0) -gt 0) {
+			$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/workType/id'; 'value' = $WtID.ToString()}
+		}
+
+		if ($PatchOperation.Count -gt 0) {
+			$PatchOperationJSON = ConvertTo-Json -Compress $PatchOperation
+		} else {
+			Write-Warning 'No valid AgreementID was passed, no operation to perform, specify a valid Agreement ID as parameter'
+			return $null
+		}
+	}
+
+	Process {
+
+		# Determine whether we were passed an ID or an entire Ticket object (with an ID property)
+		if ($id.id) {
+			$ticketID = $id.id
+		} else {
+			$ticketID = $id
+		}
+
+		if (($ticketID + 0) -gt 0) {
+
+			Add-Type -AssemblyName System.Web;
+			$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+			$Request = [System.UriBuilder]($script:cwmURL + '/service/tickets/' + $ticketID);
+			$Request.Query = $Parameters.ToString();
+
+			$result = $null
+			if ($PatchOperationJSON) {
+				$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Patch -Body $PatchOperationJSON -Headers $script:header -ContentType "application/json";
+			}
+
+			if($result) {
+				$returnobject += $result
+			}
+
+		} else {
+
+			Write-Error "TicketID can't be zero"
+			return $null
+
+		}
+	}
+
+	End {
+		# Pass the object(s) down to the pipeline if we are chaining calls
+		if ($PassThru) {
+			return $returnobject
+		} else {
+			return $null
+		}
+	}
+}
+
+Function Set-CWMProjectTicketAgreement {
+	<#
+	.SYNOPSIS
+
+	Set the Agreement and optionally the default Work Role / Work Type for one or more Project tickets
+
+	.DESCRIPTION
+
+	This function will set the Agreement for one or more Project Tickets
+
+	.PARAMETER ID
+
+	Either the ID of the Service Ticket or an object representing the Project Ticket with an ID property.
+
+	.PARAMETER AgreementID
+
+	Either the ID of an Agreement or an object representing an Agreement with an ID property. Passing this parameter with an explicit value of 0 removes the agreement
+
+	.PARAMETER WorkRoleID
+
+	Either the ID of a Work Role or an object representing a Work Role with an ID property.
+
+	.PARAMETER WorkTypeID
+
+	Either the ID of a Work Type or an object representing a Work Type with an ID property.
+
+	.EXAMPLE
+
+	Set-CWMProjectTicketAgreement -ID 123456 -AgreementID 4563
+
+	Will assign Agreement with ID 4563 to Project Ticket 123456
+
+	#>
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory,ValueFromPipeline)]
+		[Object]$ID,
+		[Object]$AgreementID,
+		[Object]$WorkRoleID,
+		[Object]$WorkTypeID,
+		[switch]$PassThru
+	)
+
+	Begin {
+		if(-Not (Start-CWMConnection)) {
+			return $null
+		}
+		$returnobject = @()
+
+
+		$PatchOperation = @()
+
+		# Determine whether we were passed an AgreementID or an entire Agreement object (with an ID property)
+		if ($AgreementID.id) {
+			$AgrID = $AgreementID.id
+		} else {
+			$AgrID = $AgreementID
+		}
+		if (($AgrID + 0) -gt 0) {
+			$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/agreement/id'; 'value' = $AgrID.ToString()}
+		} elseif ($AgrID -eq 0) {
+			$PatchOperation += [PSCustomObject]@{'op' = 'remove'; 'path' = '/agreement'}
+		}
+
+		# Determine whether we were passed an WorkRoleID or an entire WorkRole object (with an ID property)
+		if ($WorkRoleID.id) {
+			$WrID = $WorkRoleID.id
+		} else {
+			$WrID = $WorkRoleID
+		}
+		if (($WrID + 0) -gt 0) {
+			$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/workRole/id'; 'value' = $WrID.ToString()}
+		}
+
+		# Determine whether we were passed an WorkTypeID or an entire WorkType object (with an ID property)
+		if ($WorkTypeID.id) {
+			$WtID = $WorkTypeID.id
+		} else {
+			$WtID = $WorkTypeID
+		}
+		if (($WtID + 0) -gt 0) {
+			$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/workType/id'; 'value' = $WtID.ToString()}
+		}
+
+		if ($PatchOperation.Count -gt 0) {
+			$PatchOperationJSON = ConvertTo-Json -Compress $PatchOperation
+		} else {
+			Write-Warning 'No valid AgreementID was passed, no operation to perform, specify a valid Agreement ID as parameter'
+			return $null
+		}
+	}
+
+	Process {
+
+		# Determine whether we were passed an ID or an entire Ticket object (with an ID property)
+		if ($id.id) {
+			$ticketID = $id.id
+		} else {
+			$ticketID = $id
+		}
+
+		if (($ticketID + 0) -gt 0) {
+
+			Add-Type -AssemblyName System.Web;
+			$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+			$Request = [System.UriBuilder]($script:cwmURL + '/project/tickets/' + $ticketID);
+			$Request.Query = $Parameters.ToString();
+
+			$result = $null
+			if ($PatchOperationJSON) {
+				$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Patch -Body $PatchOperationJSON -Headers $script:header -ContentType "application/json";
+			}
+
+			if($result) {
+				$returnobject += $result
+			}
+
+		} else {
+
+			Write-Error "TicketID can't be zero"
+			return $null
+
+		}
+	}
+
+	End {
+		# Pass the object(s) down to the pipeline if we are chaining calls
+		if ($PassThru) {
+			return $returnobject
+		} else {
+			return $null
+		}
+	}
+}
+
+Function Set-CWMServiceTicketWRWT {
+	<#
+	.SYNOPSIS
+
+	Set the Work Role and/or Work Type for one or more Service tickets
+
+	.DESCRIPTION
+
+	This function will set the Work Role and/or Work Type for one or more Service Tickets
+
+	.PARAMETER ID
+
+	Either the ID of the Service Ticket or an object representing the Service Ticket with an ID property.
+
+	.PARAMETER WorkRole
+
+	Either the name or ID of a WorkRole or an object representing a WorkRole with an ID property.
+
+	.PARAMETER WorkType
+
+	Either the name or ID of a WorkType or an object representing a WorkType with an ID property.
+
+	.EXAMPLE
+
+	Set-CWMServiceTicketWRWT -ID 123456 -WorkRole 'Technical' -WorkType 'Remote'
+
+	Will assign WorkRole named 'Technical' and WorkType name 'Remote' (if they exist) to Service Ticket 123456
+
+	#>
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory,ValueFromPipeline)]
+		[Object]$ID,
+		[Object]$WorkRole,
+		[Object]$WorkType,
+		[switch]$PassThru
+	)
+
+	Begin {
+		if(-Not (Start-CWMConnection)) {
+			return $null
+		}
+		$returnobject = @()
+
+		$PatchOperation = @()
+
+		# Determine whether what was passed and confirm it is valid
+		if ($WorkRole.id) {
+			$WR_ID = Get-CWMObject '/time/workroles' -Conditions ('id = {0}' -f [int]($WorkRole.id)) | Select-Object -First 1 -ExpandProperty ID
+		} elseif ($WorkRole -match "^\d+$") {
+			$WR_ID = Get-CWMObject '/time/workroles' -Conditions ('id = {0}' -f [int]$WorkRole) | Select-Object -First 1 -ExpandProperty ID
+		} else {
+			$WR_ID = Get-CWMObject '/time/workroles' -Conditions ('name = "{0}"' -f [string]$WorkRole) | Select-Object -First 1 -ExpandProperty ID
+		}
+		if ($WorkRole) {
+			if (($WR_ID + 0) -gt 0) {
+				$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/workRole/id'; 'value' = $WR_ID.ToString()}
+			} else {
+				Write-Warning 'No valid WorkRole was passed, no operation to perform, specify a valid WorkRole as parameter'
+				return $null
+			}
+		}
+
+		# Determine whether what was passed and confirm it is valid
+		if ($WorkType.id) {
+			$WT_ID = Get-CWMObject '/time/WorkTypes' -Conditions ('id = {0}' -f [int]($WorkType.id)) | Select-Object -First 1 -ExpandProperty ID
+		} elseif ($WorkRole -match "^\d+$") {
+			$WT_ID = Get-CWMObject '/time/WorkTypes' -Conditions ('id = {0}' -f [int]$WorkType) | Select-Object -First 1 -ExpandProperty ID
+		} else {
+			$WT_ID = Get-CWMObject '/time/WorkTypes' -Conditions ('name = "{0}"' -f [string]$WorkType) | Select-Object -First 1 -ExpandProperty ID
+		}
+		if ($WorkType) {
+			if (($WT_ID + 0) -gt 0) {
+				$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/workType/id'; 'value' = $WT_ID.ToString()}
+			} else {
+				Write-Warning 'No valid WorkType was passed, no operation to perform, specify a valid WorkType as parameter'
+				return $null
+			}
+		}
+
+		if ($PatchOperation.Count -gt 0) {
+			$PatchOperationJSON = ConvertTo-Json -Compress $PatchOperation
+		} else {
+			Write-Warning 'No valid operation was passed, nothing to perform, specify a valid WorkRole and/or WorkType as parameters'
+			return $null
+		}
+	}
+
+	Process {
+
+		# Determine whether we were passed an ID or an entire Ticket object (with an ID property)
+		if ($id.id) {
+			$ticketID = $id.id
+		} else {
+			$ticketID = $id
+		}
+
+		if (($ticketID + 0) -gt 0) {
+
+			Add-Type -AssemblyName System.Web;
+			$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+			$Request = [System.UriBuilder]($script:cwmURL + '/service/tickets/' + $ticketID);
+			$Request.Query = $Parameters.ToString();
+
+			$result = $null
+			if ($PatchOperationJSON) {
+				$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Patch -Body $PatchOperationJSON -Headers $script:header -ContentType "application/json";
+			}
+
+			if($result) {
+				$returnobject += $result
+			}
+
+		} else {
+
+			Write-Error "TicketID can't be zero"
+			return $null
+
+		}
+	}
+
+	End {
+		# Pass the object(s) down to the pipeline if we are chaining calls
+		if ($PassThru) {
+			return $returnobject
+		} else {
+			return $null
+		}
+	}
+}
+
+Function Set-CWMProjectTicketWRWT {
+	<#
+	.SYNOPSIS
+
+	Set the Work Role and/or Work Type for one or more Project tickets
+
+	.DESCRIPTION
+
+	This function will set the Work Role and/or Work Type for one or more Project Tickets
+
+	.PARAMETER ID
+
+	Either the ID of the Project Ticket or an object representing the Project Ticket with an ID property.
+
+	.PARAMETER WorkRole
+
+	Either the name or ID of a WorkRole or an object representing a WorkRole with an ID property.
+
+	.PARAMETER WorkType
+
+	Either the name or ID of a WorkType or an object representing a WorkType with an ID property.
+
+	.EXAMPLE
+
+	Set-CWMProjectTicketWRWT -ID 123456 -WorkRole 'Technical' -WorkType 'Remote'
+
+	Will assign WorkRole named 'Technical' and WorkType name 'Remote' (if they exist) to Project Ticket 123456
+
+	#>
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory,ValueFromPipeline)]
+		[Object]$ID,
+		[Object]$WorkRole,
+		[Object]$WorkType,
+		[switch]$PassThru
+	)
+
+	Begin {
+		if(-Not (Start-CWMConnection)) {
+			return $null
+		}
+		$returnobject = @()
+
+		$PatchOperation = @()
+
+		# Determine whether what was passed and confirm it is valid
+		if ($WorkRole.id) {
+			$WR_ID = Get-CWMObject '/time/workroles' -Conditions ('id = {0}' -f [int]($WorkRole.id)) | Select-Object -First 1 -ExpandProperty ID
+		} elseif ($WorkRole -match "^\d+$") {
+			$WR_ID = Get-CWMObject '/time/workroles' -Conditions ('id = {0}' -f [int]$WorkRole) | Select-Object -First 1 -ExpandProperty ID
+		} else {
+			$WR_ID = Get-CWMObject '/time/workroles' -Conditions ('name = "{0}"' -f [string]$WorkRole) | Select-Object -First 1 -ExpandProperty ID
+		}
+		if ($WorkRole) {
+			if (($WR_ID + 0) -gt 0) {
+				$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/workRole/id'; 'value' = $WR_ID.ToString()}
+			} else {
+				Write-Warning 'No valid WorkRole was passed, no operation to perform, specify a valid WorkRole as parameter'
+				return $null
+			}
+		}
+
+		# Determine whether what was passed and confirm it is valid
+		if ($WorkType.id) {
+			$WT_ID = Get-CWMObject '/time/WorkTypes' -Conditions ('id = {0}' -f [int]($WorkType.id)) | Select-Object -First 1 -ExpandProperty ID
+		} elseif ($WorkRole -match "^\d+$") {
+			$WT_ID = Get-CWMObject '/time/WorkTypes' -Conditions ('id = {0}' -f [int]$WorkType) | Select-Object -First 1 -ExpandProperty ID
+		} else {
+			$WT_ID = Get-CWMObject '/time/WorkTypes' -Conditions ('name = "{0}"' -f [string]$WorkType) | Select-Object -First 1 -ExpandProperty ID
+		}
+		if ($WorkType) {
+			if (($WT_ID + 0) -gt 0) {
+				$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/workType/id'; 'value' = $WT_ID.ToString()}
+			} else {
+				Write-Warning 'No valid WorkType was passed, no operation to perform, specify a valid WorkType as parameter'
+				return $null
+			}
+		}
+
+		if ($PatchOperation.Count -gt 0) {
+			$PatchOperationJSON = ConvertTo-Json -Compress $PatchOperation
+		} else {
+			Write-Warning 'No valid operation was passed, nothing to perform, specify a valid WorkRole and/or WorkType as parameters'
+			return $null
+		}
+	}
+
+	Process {
+
+		# Determine whether we were passed an ID or an entire Ticket object (with an ID property)
+		if ($id.id) {
+			$ticketID = $id.id
+		} else {
+			$ticketID = $id
+		}
+
+		if (($ticketID + 0) -gt 0) {
+
+			Add-Type -AssemblyName System.Web;
+			$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+			$Request = [System.UriBuilder]($script:cwmURL + '/project/tickets/' + $ticketID);
+			$Request.Query = $Parameters.ToString();
+
+			$result = $null
+			if ($PatchOperationJSON) {
+				$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Patch -Body $PatchOperationJSON -Headers $script:header -ContentType "application/json";
+			}
+
+			if($result) {
+				$returnobject += $result
+			}
+
+		} else {
+
+			Write-Error "TicketID can't be zero"
+			return $null
+
+		}
+	}
+
+	End {
+		# Pass the object(s) down to the pipeline if we are chaining calls
+		if ($PassThru) {
+			return $returnobject
+		} else {
+			return $null
+		}
+	}
+}
+
+Function Set-CWMServiceTicketStatus {
+	<#
+	.SYNOPSIS
+
+	Set the Status for one or more Service tickets
+
+	.DESCRIPTION
+
+	This function will set the Status for one or more Service Tickets
+
+	.PARAMETER ID
+
+	Either the ID of the Service Ticket or an object representing the Service Ticket with an ID property.
+
+	.PARAMETER Status
+
+	The name of the new Status.
+	The Status will be set only if a status with that name exists for the board the ticket belongs to. Otherwise a warning is emitted and this ticket is skipped.
+
+	.EXAMPLE
+
+	Set-CWMServiceTicketStatus -ID 123456 -Status 'Closed'
+
+	Will close Service Ticket 123456
+
+	#>
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory,ValueFromPipeline)]
+		[Object]$ID,
+		[Parameter(Mandatory)]
+		[String]$Status,
+		[switch]$PassThru
+	)
+
+	Begin {
+
+		if(-Not (Start-CWMConnection)) {
+			return $null
+		}
+		$TicketIDs = @()
+		$returnobject = @()
+		$PatchOperation = @()
+
+	}
+
+	Process {
+
+		if ($id.id) {
+			$ticketID = $id.id
+		} else {
+			$ticketID = $id
+		}
+		$TicketIDs += $ticketID
+
+	}
+
+	End {
+
+		if ($TicketIDs.Count -gt 500) {
+
+			# Can't operate on more than 500 tickets since we're doing one call to get them all at once
+			Write-Warning ("Too many tickets passed ({0}), this cmdLet can only operate on 500 tickets at a time, exiting" -f ($TicketIDs.Count))
+			return $null
+
+		} else {
+
+			# Group ticket IDs together to form a search condition
+			$ticketGrouping = ($TicketIDs -replace "(.*)", '$1') -join ','
+			if (!$ticketGrouping) {
+				Write-Warning "Cannot set new status on an empty set of tickets"
+			} else {
+				$ticketsCondition = ('id IN ({0})' -f $ticketGrouping)
+				$tickets = Get-CWMObject '/service/tickets' -Conditions $ticketsCondition -PageSize 1000
+	
+				# Collate all the boards for those tickets and record the status ID for the new status on each board
+				$boards = $tickets.board | Select-Object id,name | Sort-Object id -Unique | ForEach-Object {
+					$sid = Get-CWMObject "/service/boards/$($_.id)/statuses" -Conditions ('name = "{0}"' -f $status) -Fields 'id' | Select-Object -ExpandProperty id
+					if ($sid) {
+						[PSCustomObject]@{
+							ID = $_.id
+							StatusID = $sid
+						}
+					}
+				}
+	
+				# Prepare the empty parameter object ahead of time
+				Add-Type -AssemblyName System.Web;
+				$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+	
+				# Set the status for each ticket (really set the status ID appropriate for the new status on the ticket's board)
+				foreach ($ticket in $tickets) {
+					$sid = $boards | Where-Object ID -eq $ticket.board.id | Select-Object -ExpandProperty StatusID
+					# Only if that new status exists on this ticket's board
+					if ($sid) {
+						$PatchOperation = [PSCustomObject]@{'op' = 'replace'; 'path' = '/status/id'; 'value' = $sid.ToString()}
+						$PatchOperationJSON = ConvertTo-Json -Compress $PatchOperation
+						$Request = [System.UriBuilder]($script:cwmURL + '/service/tickets/' + $ticket.id);
+						$Request.Query = $Parameters.ToString();
+			
+						$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Patch -Body "[$PatchOperationJSON]" -Headers $script:header -ContentType "application/json";
+						if($result) {
+							$returnobject += $result
+						}
+					} else {
+						Write-Warning "Status '$status' not found on board '$($ticket.board.name)' for ticket $($ticket.id), skipping"
+					}
+				}
+			}
+		}
+
+		# Pass the object(s) down to the pipeline if we are chaining calls
+		if ($PassThru) {
+			return $returnobject
+		} else {
+			return $null
+		}
+	}
+
+}
+
+Function Set-CWMTicketResourceDone {
+	<#
+	.SYNOPSIS
+
+	Set a Resource Done for one or more Project tickets
+
+	.DESCRIPTION
+
+	This function will mark a Resource (CW member) Done for one or more Project Tickets
+
+	.PARAMETER ID
+
+	Either the ID of the Ticket or an object representing the Ticket with an ID property.
+
+	.PARAMETER Member
+
+	One or more identifier(s) for existing CWM Member(s).
+
+	.EXAMPLE
+
+	Set-CWMTicketResourceDone -ID 123456 -Member ('jsmith', 'sford')
+
+	Will mark members jsmith (user John Smith) and sford (user Sally Ford) Done for Service Ticket 123456
+
+	#>
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory,ValueFromPipeline)]
+		[Object]$id,
+		[object[]]$Member,
+		[switch]$PassThru
+	)
+
+	Begin {
+		if(-Not (Start-CWMConnection)) {
+			return $null
+		}
+		$returnobject = @()
+
+
+		$PatchOperation = @()
+		$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/doneFlag'; 'value' = $true}
+		$PatchOperationJSON = ConvertTo-Json -Compress $PatchOperation
+	}
+
+	Process {
+
+		# Determine whether we were passed an ID or an entire Ticket object (with an ID property)
+		if ($id.id) {
+			$ticketID = $id.id
+		} else {
+			$ticketID = $id
+		}
+
+		if (($ticketID + 0) -gt 0) {
+
+			$mbrs = '("' + ($Member -join '","') + '")'
+			$schedEntries = Get-CWMObject -Endpoint '/schedule/entries' -Conditions ('member/identifier IN {0} AND doneFlag = false AND objectid = {1}' -f $mbrs, $ticketID)
+
+			Add-Type -AssemblyName System.Web;
+			$schedEntries | Foreach-Object {
+
+				$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+				$Request = [System.UriBuilder]($script:cwmURL + '/schedule/entries/' + $_.id);
+				$Request.Query = $Parameters.ToString();
+	
+				$result = $null
+				if ($PatchOperationJSON) {
+					$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Patch -Body $PatchOperationJSON -Headers $script:header -ContentType "application/json";
+					#write-warning $PatchOperationJSON
+					#write-warning '/schedule/entries/' + $_.id
+				}
+	
+				if($result) {
+					$returnobject += $result
+				}
+
+			}
+
+		} else {
+
+			Write-Error "TicketID can't be zero"
+			return $null
+
+		}
+	}
+
+	End {
+		# Pass the object(s) down to the pipeline if we are chaining calls
+		if ($PassThru) {
+			return $returnobject
+		} else {
+			return $null
+		}
+	}
+
+}
+
+Function Add-CWMTicketResource {
+	<#
+	.SYNOPSIS
+
+	Add one or more Resource(s) to a Service or Project Ticket
+
+	.DESCRIPTION
+
+	This function will add one or more Member(s) (a CWM user) as Resource on a Service or Project Ticket.
+	This function is very dependent on WST implementation as it sets several fields with specific defaults.
+	The Where is set to "Remote Support" (id:2)
+	The Reminder is set to "15 minutes" (id:4)
+	The Status is set to "Firm" (id:2)
+	The Type is set to "Service" (id:4)
+
+	.PARAMETER ID
+
+	Either the ID of the Service or Project Ticket or an object representing the Service or Project Ticket with an ID property.
+
+	.PARAMETER Member
+
+	One or more identifier(s) for existing CWM Member(s).
+
+	.EXAMPLE
+
+	Add-CWMTicketResource -ID 123456 -Member ('jsmith', 'sford')
+
+	Will assign jsmith (user John Smith) and sford (user Sally Ford) to Service Ticket 123456
+
+	#>
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory,ValueFromPipeline)]
+		[Object]$ID,
+		[object[]]$Member,
+		[switch]$PassThru
+	)
+
+	Begin {
+		if(-Not (Start-CWMConnection)) {
+			return $null
+		}
+		$returnobject = @()
+
+	}
+
+	Process {
+
+		# Determine whether we were passed an ID or an entire Ticket object (with an ID property)
+		if ($id.id) {
+			$ticketID = $id.id
+		} else {
+			$ticketID = $id
+		}
+
+		if ((0 + $ticketID) -gt 0) {
+
+			Add-Type -AssemblyName System.Web;
+			$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+			$Request = [System.UriBuilder]($script:cwmURL + '/schedule/entries');
+			$Request.Query = $Parameters.ToString();
+
+			# Create a schedule entry per member (or member ID)
+			foreach ($mbr in $Member) {
+				if (($mbr -is [int32]) -and (0 + $mbr) -gt 0) {
+					$PostOperationJSON = '{"objectId":' + $ticketId + ',"member":{"id":"' + $mbr + '"},"where":{"id":2},"reminder":{"id":4},"status":{"id":2},"type":{"id":4},"span":{"id":1}}'
+				} else {
+					$PostOperationJSON = '{"objectId":' + $ticketId + ',"member":{"identifier":"' + $mbr + '"},"where":{"id":2},"reminder":{"id":4},"status":{"id":2},"type":{"id":4},"span":{"id":1}}'
+				}
+
+				$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Post -Body $PostOperationJSON -Headers $script:header -ContentType "application/json";
+
+				if($result) {
+					$returnobject += $result
+				}
+			}
+
+		} else {
+
+			Write-Error "TicketID can't be zero"
+			return $null
+
+		}
+	}
+
+	End {
+		# Pass the object(s) down to the pipeline if we are chaining calls
+		if ($PassThru) {
+			return $returnobject
+		} else {
+			return $null
+		}
+	}
+}
+
+Function Add-CWMNetworkDeviceConfiguration {
+	<#
+	.SYNOPSIS
+
+	Add a CW Configuration of one of the "Network *" types
+
+	.DESCRIPTION
+
+	This function will add a CW Configuration representing a network device of the types supported by Automate (for compatibility)
+
+	.PARAMETER Company
+
+	Either the identifier or the ID of a Manage Company.
+
+	.PARAMETER Site
+
+	Either the name or the ID of a Manage Site for the chosen Company.
+
+	.PARAMETER Name
+
+	The name of the device to be created.
+
+	.PARAMETER Type
+
+	The type of network device, either a Manage type or an Automate type.
+
+	.PARAMETER IPAddress
+
+	The IP address of this device.
+
+	.PARAMETER MACAddress
+
+	The MAC address of this device (has to be unique per Company).
+
+	.PARAMETER Status
+
+	Ignored for this cmdlet. Status is always set to Active.
+
+	.EXAMPLE
+
+	#>
+	[CmdletBinding()]
+	Param (
+        [Parameter(Mandatory,ValueFromPipelineByPropertyName)]
+        [Alias('Client')]
+		[Object[]]$Company,
+		[Parameter(Mandatory,ValueFromPipelineByPropertyName)]
+        [Alias('Location')]
+		[Object[]]$Site,
+		[Parameter(Mandatory,ValueFromPipelineByPropertyName)]
+        [Alias('FinalDeviceName')]
+		[Object[]]$Name,
+		[Parameter(Mandatory,ValueFromPipelineByPropertyName)]
+        [Alias('DeviceType')]
+		[Object[]]$Type,
+		[Parameter(Mandatory,ValueFromPipelineByPropertyName)]
+		[Object[]]$IPAddress,
+		[Parameter(Mandatory,ValueFromPipelineByPropertyName)]
+		[Object[]]$MACAddress,
+		[Parameter(Mandatory,ValueFromPipelineByPropertyName)]
+		[Object[]]$Status
+	)
+
+	Begin {
+		if(-Not (Start-CWMConnection)) {
+			return $null
+		}
+		$CompanyIDs = @{}
+		$SiteIDs = @{}
+		$Objects = @()
+	}
+
+	Process {
+
+		$Objects += [PSCustomObject]@{
+			Company = $Company | Select-Object -First 1
+			Site = $Site | Select-Object -First 1
+			Name = $Name | Select-Object -First 1
+			Type = $Type | Select-Object -First 1
+			IPAddress = $IPAddress | Select-Object -First 1
+			MACAddress = $MACAddress | Select-Object -First 1
+		}
+
+	}
+
+	End {
+
+		$cnt = 0
+
+		foreach ($obj in $Objects) {
+
+			$Company = "$($obj.Company)"
+			$Site = "$($obj.Site)"
+			$Name = "$($obj.Name)"
+			$Type = "$($obj.Type)"
+			$IPAddress = "$($obj.IPAddress)"
+			$MACAddress = "$($obj.MACAddress)"
+
+			$cnt++; Write-Progress -Activity 'Pass 1: Processing devices' -CurrentOperation "$Company/$Site" -PercentComplete (($cnt / $Objects.count) * 100)
+
+			# Determine the CompanyID
+			if ($Company -is [int]) {
+				$CompanyID = $Company
+			} else {
+				$Company = $Company -replace "'", "*" # Escape apostrophes
+				$Company = $Company -replace "&", "*" # Escape apostrophes
+				if ($CompanyIDs["$Company"] -gt 0) {
+					$CompanyID = $CompanyIDs["$Company"]
+				} else {
+					$cid = (Get-CWMObject 'company/companies' -Conditions "identifier = '$Company' OR name LIKE '$Company'" -Fields 'id').id | Select-Object -First 1
+					if ($cid -is [int]) {
+						$CompanyIDs["$Company"] = [int]$cid
+						$CompanyID = $CompanyIDs["$Company"]
+					} else {
+						throw "Unable to locate Company '$Company' at line $cnt"
+					}
+				}
+			}
+
+			# Determine the SiteID of this CompanyID
+			if ($Site -is [int]) {
+				$SiteID = $Site
+			} else {
+				if ($SiteIDs["$($CompanyID)$($Site)"] -gt 0) {
+					$SiteID = $SiteIDs["$($CompanyID)$($Site)"]
+				} else {
+					$sid = (Get-CWMObject "company/companies/$CompanyID/sites" -Conditions "name = '$Site'" -Fields 'id').id
+					if ($sid -is [int]) {
+						$SiteIDs["$($CompanyID)$($Site)"] = [int]$sid
+						$SiteID = $SiteIDs["$($CompanyID)$($Site)"]
+					} else {
+						throw "Unable to locate Site '$Site' for '$Company' at line $cnt"
+					}
+				}
+			}
+
+			# Determine the validity of the type of device
+			switch ($Type) {
+				"Bridge" {$Type = "Managed Network Bridge"; break}
+				"Camera/Scanner" {$Type = "Managed Network Camera/Scanner"; break}
+				"Computer" {$Type = "Managed Network Computer"; break}
+				"Dell DRAC Device" {$Type = "Managed Network Dell DRAC"; break}
+				"Network Device" {$Type = "Managed Network Device"; break}
+				"vSphere Host" {$Type = "Managed Network ESX Host"; break}
+				"Firewall" {$Type = "Managed Network Firewall"; break}
+				"Home Automation" {$Type = "Managed Network Home Automate"; break}
+				"HP iLo Device" {$Type = "Managed Network HP iLO"; break}
+				"Multimedia Device" {$Type = "Managed Network Multimedia"; break}
+				"NAS Disk" {$Type = "Managed Network NAS Disk"; break}
+				"Programmable Logic Controller" {$Type = "Managed Network PLC"; break}
+				"Printer" {$Type = "Managed Network Printer"; break}
+				"Router" {$Type = "Managed Network Router"; break}
+				"Network Switch" {$Type = "Managed Network Switch"; break}
+				"Terminal" {$Type = "Managed Network Terminal"; break}
+				"UPS" {$Type = "Managed Network UPS"; break}
+				"VoIP Device" {$Type = "Managed Network Voip Device"; break}
+				"Wi-Fi Access Point" {$Type = "Managed Network WiFi Access"; break}
+				"Managed Network Bridge" {break}
+				"Managed Network Camera/Scanner" {break}
+				"Managed Network Computer" {break}
+				"Managed Network Dell DRAC" {break}
+				"Managed Network Device" {break}
+				"Managed Network ESX Host" {break}
+				"Managed Network Firewall" {break}
+				"Managed Network Home Automate" {break}
+				"Managed Network HP iLO" {break}
+				"Managed Network Multimedia" {break}
+				"Managed Network NAS Disk" {break}
+				"Managed Network PLC" {break}
+				"Managed Network Printer" {break}
+				"Managed Network Router" {break}
+				"Managed Network Switch" {break}
+				"Managed Network Terminal" {break}
+				"Managed Network UPS" {break}
+				"Managed Network Voip Device" {break}
+				"Managed Network WiFi Access" {break}
+				default {
+					throw "Wrong type '$Type' at line $cnt"
+				}
+			}
+
+			# Determine the validity of the IP address syntax
+			try { [IPAddress]"$IPAddress" | Out-Null } catch { throw "Invalid IP address format for '$IPAddress' at line $cnt" }
+
+			# Determine the validity of the MAC address syntax
+			if ($MACAddress -match "^[0-9a-f]{2}([-:]?)[0-9a-f]{2}([-:]?)[0-9a-f]{2}([-:]?)[0-9a-f]{2}([-:]?)[0-9a-f]{2}([-:]?)[0-9a-f]{2}$") {
+				# Format the address for Manage
+				$MACAddress = ($MACAddress -replace ':', '-').ToUpper()
+			} else {
+				throw "Invalid MAC address format for '$MACAddress' at line $cnt"
+			}
+
+			# All the parameters are correct, add the Configuration
+			Add-Type -AssemblyName System.Web;
+			$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+			$Request = [System.UriBuilder]($script:cwmURL + '/company/configurations');
+			$Request.Query = $Parameters.ToString();
+
+			#$PatchOperation = '[{"op": "replace", "path": "/name", "value": "' + $SiteName + '"}]';
+
+			# Create the object and convert it to JSON
+			$PostOperationJSON = [PSCustomObject]@{
+				Name = $Name
+				Company = @{ID = $CompanyID}
+				Site = @{ID = $SiteID}
+				Type = @{Name = $Type}
+				IPAddress = $IPAddress
+				MACAddress = $MACAddress			
+			} | ConvertTo-Json -Compress
+
+			# Need to remove extra brackets generated by PS
+			$PostOperationJSON = $PostOperationJSON -replace '\[','' -replace '\]',''
+
+			# Post a new Configuration and bail if there is an error
+			Invoke-RestMethod -Uri "$($Request.Uri)" -Method Post -Body $PostOperationJSON -Headers $script:header -ContentType "application/json" -ErrorAction Stop
+
+		}
+
+	}
+}
+
+Function Update-CWMNetworkDeviceConfiguration {
+	<#
+	.SYNOPSIS
+
+	Update an existing CW Configuration of one of the "Network *" types
+
+	.DESCRIPTION
+
+	This function will update the name, type, IP and MAC of an existing CW Configuration representing a network device of the types supported by Automate (for compatibility)
+
+	.PARAMETER ID
+
+	The ID of the Configuration to update.
+
+	.PARAMETER Name
+
+	The name of the device to be created.
+
+	.PARAMETER Type
+
+	The type of network device, either a Manage type or an Automate type.
+
+	.PARAMETER IPAddress
+
+	The IP address of this device.
+
+	.PARAMETER MACAddress
+
+	The MAC address of this device (has to be unique per Company).
+
+	.PARAMETER Status
+
+	Ignored for this cmdlet. Status is always set to Active.
+
+	.EXAMPLE
+
+	#>
+	[CmdletBinding()]
+	Param (
+        [Parameter(Mandatory,ValueFromPipelineByPropertyName)]
+		[Object[]]$ID,
+        [Parameter(ValueFromPipelineByPropertyName)]
+        [Alias('Client')]
+		[Object[]]$Company,
+		[Parameter(ValueFromPipelineByPropertyName)]
+        [Alias('Location')]
+		[Object[]]$Site,
+		[Parameter(Mandatory,ValueFromPipelineByPropertyName)]
+        [Alias('FinalDeviceName')]
+		[Object[]]$Name,
+		[Parameter(Mandatory,ValueFromPipelineByPropertyName)]
+        [Alias('DeviceType')]
+		[Object[]]$Type,
+		[Parameter(Mandatory,ValueFromPipelineByPropertyName)]
+		[Object[]]$IPAddress,
+		[Parameter(Mandatory,ValueFromPipelineByPropertyName)]
+		[Object[]]$MACAddress,
+		[Parameter(Mandatory,ValueFromPipelineByPropertyName)]
+		[Object[]]$Status
+	)
+
+	Begin {
+		if(-Not (Start-CWMConnection)) {
+			return $null
+		}
+		$Objects = @()
+		$ConfTypes = Get-CWMObject 'company/configurations/types' -Conditions 'inactiveflag = False' -Fields 'id,name'
+		$CompanyIDs = @{}
+		$SiteIDs = @{}
+		$StatusIDs = @{}
+	}
+
+	Process {
+
+		$Objects += [PSCustomObject]@{
+			ID = $ID | Select-Object -First 1
+			Company = $Company | Select-Object -First 1
+			Site = $Site | Select-Object -First 1
+			Name = $Name | Select-Object -First 1
+			Type = $Type | Select-Object -First 1
+			IPAddress = $IPAddress | Select-Object -First 1
+			MACAddress = $MACAddress | Select-Object -First 1
+			Status = $Status | Select-Object -First 1
+		}
+
+	}
+
+	End {
+
+		$cnt = 0
+
+		foreach ($obj in $Objects) {
+			# Don't ask me why but this is required to ensure that the properties are simple types
+			$obj = $obj | ConvertTo-Json | ConvertFrom-Json
+
+			[int]$ID = (0 + $obj.ID)
+			$Company = "$($obj.Company)" -join ""
+			$Site = "$($obj.Site)" -join ""
+			$Name = "$($obj.Name)" -join ""
+			$Type = "$($obj.Type)" -join ""
+			$IPAddress = "$($obj.IPAddress)" -join ""
+			$MACAddress = "$($obj.MACAddress)" -join ""
+			$Status = "$($obj.Status)" -join ""
+
+			$cnt++; Write-Progress -Activity 'Processing devices' -CurrentOperation "$Company/$Site" -PercentComplete (($cnt / $Objects.count) * 100)
+
+			# Determine the configuration ID from the Company/Location/MAC if no ID was passed
+			if ($ID -eq 0) {
+
+				# Determine the CompanyID
+				if ($Company -is [int]) {
+					$CompanyID = $Company
+				} else {
+					$Company = $Company -replace "'", "*" # Escape apostrophes
+					$Company = $Company -replace "&", "*" # Escape apostrophes
+					if ($CompanyIDs["$Company"] -gt 0) {
+						$CompanyID = $CompanyIDs["$Company"]
+					} else {
+						$cid = (Get-CWMObject 'company/companies' -Conditions "identifier = '$Company' OR name LIKE '$Company'" -Fields 'id').id | Select-Object -First 1
+						if ($cid -is [int]) {
+							$CompanyIDs["$Company"] = [int]$cid
+							$CompanyID = $CompanyIDs["$Company"]
+						} else {
+							throw "Unable to locate Company '$Company' at line $cnt"
+						}
+					}
+				}
+
+				# Determine the SiteID of this CompanyID
+				if ($Site -is [int]) {
+					$SiteID = $Site
+				} else {
+					if ($SiteIDs["$($CompanyID)$($Site)"] -gt 0) {
+						$SiteID = $SiteIDs["$($CompanyID)$($Site)"]
+					} else {
+						$sid = (Get-CWMObject "company/companies/$CompanyID/sites" -Conditions "name = '$Site'" -Fields 'id').id
+						if ($sid -is [int]) {
+							$SiteIDs["$($CompanyID)$($Site)"] = [int]$sid
+							$SiteID = $SiteIDs["$($CompanyID)$($Site)"]
+						} else {
+							throw "Unable to locate Site '$Site' for '$Company' at line $cnt"
+						}
+					}
+				}
+
+				# Determine the Configuration from there
+				$ID = (Get-CWMObject -Endpoint '/company/configurations' -Conditions "company/id = $CompanyID AND site/id = $SiteID AND macaddress = '$MACAddress'" -Fields 'id' | Sort-Object id | Select-Object -Last 1 -ExpandProperty id) -as [int]
+				if ($ID -eq 0) {
+					throw "Unable to configuration for Company ID $CompanyID, Site ID $SiteID and MAC Address $MACAddress"
+				} else {
+					Write-Verbose "Found ID $ID"
+				}
+			} else {
+				Write-Verbose "Existing ID $ID"
+			}
+			
+			# Determine the new status
+			# Status could either be a number, a string representing the status name or a combo "<id>.<name>"
+			# Extract either the ID or the name if no ID was provided
+			$Status1 = $Status -split '\.' | Select-Object -First 1
+			if (($Status1 -as [int]) -gt 0) {
+				$StatusID = $Status1
+			} else {
+				if ($StatusIDs["$Status1"] -gt 0) {
+					$StatusID = $StatusIDs["$Status1"]
+				} else {
+					$stid = (Get-CWMObject 'company/configurations/statuses' -Conditions "description = '$Status1'" -Fields 'id').id
+					if ($stid -is [int]) {
+						$StatusIDs["$Status1"] = [int]$stid
+						$StatusID = $StatusIDs["$Status1"]
+					} else {
+						throw "Unable to determine Status '$Status1' at line $cnt"
+					}
+				}
+			}
+
+			# Determine the validity of the type of device
+			switch ($Type) {
+				"Bridge" {$Type = "Managed Network Bridge"; break}
+				"Camera/Scanner" {$Type = "Managed Network Camera/Scanner"; break}
+				"Computer" {$Type = "Managed Network Computer"; break}
+				"Dell DRAC Device" {$Type = "Managed Network Dell DRAC"; break}
+				"Network Device" {$Type = "Managed Network Device"; break}
+				"vSphere Host" {$Type = "Managed Network ESX Host"; break}
+				"Firewall" {$Type = "Managed Network Firewall"; break}
+				"Home Automation" {$Type = "Managed Network Home Automate"; break}
+				"HP iLo Device" {$Type = "Managed Network HP iLO"; break}
+				"Multimedia Device" {$Type = "Managed Network Multimedia"; break}
+				"NAS Disk" {$Type = "Managed Network NAS Disk"; break}
+				"Programmable Logic Controller" {$Type = "Managed Network PLC"; break}
+				"Printer" {$Type = "Managed Network Printer"; break}
+				"Router" {$Type = "Managed Network Router"; break}
+				"Network Switch" {$Type = "Managed Network Switch"; break}
+				"Terminal" {$Type = "Managed Network Terminal"; break}
+				"UPS" {$Type = "Managed Network UPS"; break}
+				"VoIP Device" {$Type = "Managed Network Voip Device"; break}
+				"Wi-Fi Access Point" {$Type = "Managed Network WiFi Access"; break}
+				"Managed Network Bridge" {break}
+				"Managed Network Camera/Scanner" {break}
+				"Managed Network Computer" {break}
+				"Managed Network Dell DRAC" {break}
+				"Managed Network Device" {break}
+				"Managed Network ESX Host" {break}
+				"Managed Network Firewall" {break}
+				"Managed Network Home Automate" {break}
+				"Managed Network HP iLO" {break}
+				"Managed Network Multimedia" {break}
+				"Managed Network NAS Disk" {break}
+				"Managed Network PLC" {break}
+				"Managed Network Printer" {break}
+				"Managed Network Router" {break}
+				"Managed Network Switch" {break}
+				"Managed Network Terminal" {break}
+				"Managed Network UPS" {break}
+				"Managed Network Voip Device" {break}
+				"Managed Network WiFi Access" {break}
+				"Managed Workstation" {break}
+				"Managed Server" {break}
+				default {
+					throw "Wrong type '$Type' at line $cnt"
+				}
+			}
+
+			# Determine the validity of the IP address syntax
+			try { [IPAddress]"$IPAddress" | Out-Null } catch { throw "Invalid IP address format for '$IPAddress' at line $cnt" }
+
+			# Determine the validity of the MAC address syntax
+			if ($MACAddress -match "^[0-9a-f]{2}([-:]?)[0-9a-f]{2}([-:]?)[0-9a-f]{2}([-:]?)[0-9a-f]{2}([-:]?)[0-9a-f]{2}([-:]?)[0-9a-f]{2}$") {
+				# Format the address for Manage
+				$MACAddress = ($MACAddress -replace ':', '-').ToUpper()
+			} else {
+				throw "Invalid MAC address format for '$MACAddress' at line $cnt"
+			}
+
+			# All the parameters are correct, update the Configuration
+			Add-Type -AssemblyName System.Web;
+			$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+			$Request = [System.UriBuilder]($script:cwmURL + "/company/configurations/$($ID)");
+			$Request.Query = $Parameters.ToString();
+
+			$POName = '{"op": "replace", "path": "/name", "value": "' + $Name + '"}';
+			$POIPAddress = '{"op": "replace", "path": "/ipAddress", "value": "' + $IPAddress + '"}';
+			$POMACAddress = '{"op": "replace", "path": "/macAddress", "value": "' + $MACAddress + '"}';
+			$POStatus = '{"op": "replace", "path": "/status/id", "value": "' + $StatusID + '"}';
+			$PatchOperation = '[{0},{1},{2},{3}]' -f $POName, $POIPAddress, $POMACAddress, $POStatus
+
+			# Post a new Configuration and bail if there is an error
+			Invoke-RestMethod -Uri "$($Request.Uri)" -Method Patch -Body $PatchOperation -Headers $script:header -ContentType "application/json" -ErrorAction Stop | Out-Null
+
+			$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+			$Request = [System.UriBuilder]($script:cwmURL + "/company/configurations/$($ID)/changeType");
+			$Request.Query = $Parameters.ToString();
+
+			$ConfTypeID = ($ConfTypes | Where-Object {$_.name -eq $Type}).id
+			$POType = '{"op": "replace", "path": "/type/id", "value": "' + $ConfTypeID + '"}';
+			$PatchOperation = '[{0}]' -f $POType
+
+			# Post a new Configuration and bail if there is an error
+			Invoke-RestMethod -Uri "$($Request.Uri)" -Method Patch -Body $PatchOperation -Headers $script:header -ContentType "application/json" -ErrorAction Stop | Out-Null
+<#
+#>
+		}
+
+	}
+}
+
+Function Set-CWMTimeEntryWorkRoleWorkType {
+	<#
+	.SYNOPSIS
+
+	Set the Work Role and/or Work Type for one or more Time Entries
+
+	.DESCRIPTION
+
+	This function will assign a new Work Role and/or Work Type one or more Time Entries
+
+	.PARAMETER ID
+
+	Either the ID of the TimeEntry or an object representing the TimeEntry with an ID property.
+
+	.PARAMETER AgreementID
+
+	Either the ID of an Agreement or an object representing an Agreement with an ID property. Passing this parameter with an explicit value of 0 removes the agreement
+
+	.PARAMETER WorkRoleID
+
+	Either the ID of an Work Role or an object representing a Work Role with an ID property.
+
+	.PARAMETER WorkTypeID
+
+	Either the ID of an Work Type or an object representing a Work Type with an ID property.
+
+	.EXAMPLE
+
+	Set-CWMTimeEntryWorkRoleWorkType -id 123456 -WorkRoleID 23 -WorkTypeID 27
+
+	Will set the Work Role and Work Type on time entry 123456
+
+	.EXAMPLE
+
+
+	#>
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory,ValueFromPipeline)]
+		[Object]$id,
+
+		[Object]$AgreementID,
+		[Object]$WorkRoleID,
+		[Object]$WorkTypeID,
+
+		[switch]$PassThru
+	)
+
+	Begin {
+		if(-Not (Start-CWMConnection)) {
+			return $null
+		}
+		$returnobject = @()
+
+
+		$PatchOperation = @()
+
+		# Determine whether we were passed an AgreementID or an entire Agreement object (with an ID property)
+		if ($AgreementID.id) {
+			$AgrID = $AgreementID.id
+		} else {
+			$AgrID = $AgreementID
+		}
+		if (($AgrID + 0) -gt 0) {
+			$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/agreement/id'; 'value' = $AgrID.ToString()}
+		} elseif ($AgrID -eq 0) {
+			$PatchOperation += [PSCustomObject]@{'op' = 'remove'; 'path' = '/agreement'}
+		}
+
+		# Determine whether we were passed an AgreementID or an entire Agreement object (with an ID property)
+		if ($WorkRoleID.id) {
+			$wrkRID = $WorkRoleID.id
+		} else {
+			$wrkRID = $WorkRoleID
+		}
+		if (($wrkRID + 0) -gt 0) {
+			$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/workRole/id'; 'value' = $wrkRID.ToString()}
+		}
+
+		# Determine whether we were passed an AgreementID or an entire Agreement object (with an ID property)
+		if ($WorkTypeID.id) {
+			$wrkTID = $WorkTypeID.id
+		} else {
+			$wrkTID = $WorkTypeID
+		}
+		if (($wrkTID + 0) -gt 0) {
+			$PatchOperation += [PSCustomObject]@{'op' = 'replace'; 'path' = '/workType/id'; 'value' = $wrkTID.ToString()}
+		}
+
+		if ($PatchOperation.Count -gt 0) {
+			$PatchOperationJSON = ConvertTo-Json -Compress $PatchOperation
+		} else {
+			Write-Warning 'No work type/role was passed, no operation to perform, specify at least one of WorkRoleID or WorkTypeID paramaters'
+			return $null
+		}
+	}
+
+	Process {
+
+		# Determine whether we were passed an ID or an entire Ticket object (with an ID property)
+		if ($id.id) {
+			$timeEntryID = $id.id
+		} else {
+			$timeEntryID = $id
+		}
+
+		if (($timeEntryID + 0) -gt 0) {
+
+			Add-Type -AssemblyName System.Web;
+			$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+			$Request = [System.UriBuilder]($script:cwmURL + '/time/entries/' + $timeEntryID);
+			$Request.Query = $Parameters.ToString();
+
+			$result = $null
+			if ($PatchOperationJSON) {
+				$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Patch -Body $PatchOperationJSON -Headers $script:header -ContentType "application/json";
+			}
+
+			if($result) {
+				$returnobject += $result
+			}
+
+		} else {
+
+			Write-Error "Time Entry ID can't be zero"
+			return $null
+
+		}
+	}
+
+	End {
+		# Pass the object(s) down to the pipeline if we are chaining calls
+		if ($PassThru) {
+			return $returnobject
+		} else {
+			return $null
+		}
+	}
+}
+
+Function Get-CWMCompanies {
+	<#
+	.SYNOPSIS
+
+	Return a list of CW Manage Companies (by default companies we usually do business with)
+
+	.DESCRIPTION
+
+	This function will return a list of ManageAPI.Company objects which be used to find company names and IDs and piped to other ManageAPI functions expecting to act on one or more companies
+
+	.PARAMETER All
+
+	Select all companies in CW Manage.
+
+	.PARAMETER Active
+
+	Select all active companies in CW Manage.
+
+	.PARAMETER Regular
+
+	Select companies of type 'Customer - A' or 'Customer - B'. This is the default if no parameter is specified.
+
+	.PARAMETER MSP
+
+	Select companies with agreement type 'MSP - Level 2' only.
+
+	.PARAMETER MSPIsh
+
+	Select companies with agreement type 'MSP*', which includes Level 1, Level 2 and Co-Managed.
+
+	.EXAMPLE
+
+	Get-CWMCompanies
+
+	Select the list of companies we usually work with (Regulars)
+
+	#>
+	[CmdletBinding(DefaultParameterSetname='Regular')]
+	Param (
+		[Parameter(ParameterSetName='All', Position=0)][switch]$All,
+		[Parameter(ParameterSetName='Active', Position=0)][switch]$Active,
+		[Parameter(ParameterSetName='Regular', Position=0)][switch]$Regular,
+		[Parameter(ParameterSetName='MSP', Position=0)][switch]$MSP,
+		[Parameter(ParameterSetName='MSPIsh', Position=0)][switch]$MSPIsh
+	)
+
+	if(-Not (Start-CWMConnection)) {
+		return $null
+	}
+
+	if ($PSCmdlet.ParameterSetName -eq 'Regular') {$Regular = $true}
+	$companies = $null
+
+	switch ($true) {
+		$All {
+			$companies = Get-CWMObject -Endpoint 'company/companies'
+			break
+		}
+		$Active {
+			$companies = Get-CWMObject -Endpoint 'company/companies' -Conditions 'status/name = "Active"'
+			break
+		}
+		$Regular {
+			$companies = Get-CWMObject -Endpoint 'company/companies' -Conditions 'status/name = "Active"' | Where-Object {$_.types.name -like "Customer - A*" -or $_.types.name -like "Customer - B*"}
+			break
+		}
+		$MSP {
+			$agreements = Get-CWMObject -Endpoint 'finance/agreements' -Conditions 'type/name LIKE "MSP - Level 2" AND agreementstatus = "Active" AND company/identifier != "TestCompany"'
+			if ($agreements) {
+				$companies = Get-CWMObject 'company/companies' -Conditions ('id IN ({0})' -f (($agreements | Select-Object @{n='id';e={$_.company.id}} | Select-Object -ExpandProperty id) -join ','))
+			}
+			break
+		}
+		$MSPIsh {
+			$agreements = Get-CWMObject -Endpoint 'finance/agreements' -Conditions 'type/name LIKE "MSP*" AND agreementstatus = "Active" AND company/identifier != "TestCompany"'
+			if ($agreements) {
+				$companies = Get-CWMObject 'company/companies' -Conditions ('id IN ({0})' -f (($agreements | Select-Object @{n='id';e={$_.company.id}} | Select-Object -ExpandProperty id) -join ','))
+			}
+			break
+		}
+	}
+
+	if ($companies) {
+		$companies | ForEach-Object {$_.PSObject.TypeNames.Insert(0,'ManageAPI.Company')}
+	}
+
+	$companies | Sort-Object -Property identifier
+}
+
+Function New-CWMServiceTicket {
+	<#
+	.SYNOPSIS
+
+	Create a new service ticket for one or more companies
+
+	.DESCRIPTION
+
+	This function will create the same service ticket for one or more companies. Each ticket will have the same Type/Subtype/Item, Summary, Description and Resources assigned to it.
+
+	This is used to create bulk tickets for work we need to perform across many clients.
+
+	.PARAMETER ID
+
+	One or more ManageAPI.Company object(s) with an ID property.
+
+	.PARAMETER Company
+
+	The company name (* and . wildcards accepted, will create a ticket for all active companies matching the name).
+
+	.PARAMETER Summary
+
+	The summary line for the ticket(s).
+
+	.PARAMETER Board
+
+	The service board the ticket(s) will be created in. Must be a valid board name (defaults to 'Service').
+
+	.PARAMETER Status
+
+	The status to set the ticket(s) to. Must be a valid Status for the board where the ticket(s) will be created.
+	If not specified will be set to New if there are no Resources associated with the ticket or Assigned otherwise.
+
+	.PARAMETER Type
+
+	The type of the ticket(s). Must be a valid Type for the board where the ticket(s) will be created. If not specified will use the default Type for the Board.
+
+	.PARAMETER Subtype
+
+	The sub-type of the ticket(s). Must be a valid Subtype for the board where the ticket(s) will be created.
+
+	.PARAMETER Item
+
+	The item for the ticket(s). Must be a valid Item for the board where the ticket(s) will be created.
+
+	.PARAMETER Resource
+
+	The resource(s) assigned to the ticket(s). Must be a list of valid Manage Members.
+
+	.PARAMETER Description
+
+	The description field for the ticket(s).
+	If this parameter is omitted, an interactive console prompts for the description (terminate with 'q').
+	Use -Description "" to enter an empty description.
+
+	.EXAMPLE
+
+	Get-CWMCompanies | New-Ticket -Summary 'Install widget' -Type 'Add/Move/Change' -Subtype 'Software' -Item 'Widget' -Resource ('bob','alice')
+
+	Enter the ticket(s) description one line at a time, press <Enter> to add a line. Type 'q' and <Enter> to complete description:
+	- must download widget.exe from http://www.widgetsare.us
+	- install with parameter "silentmode"
+	- call client when done
+	q
+
+	Will create the same 'Install widget' tickets for all regular clients in the 'Service' board, assign Bob and Alice to the tickets and set the description for an interactive prompt.
+	The tickets' status will be 'Assigned' (default when resources are assigned).
+
+	.EXAMPLE
+
+	New-Ticket -Company 'ACME Toys' -Summary 'Patch router firmware' -Board 'Maintenance' -Status 'To schedule' -Type 'Maintenance' -Subtype 'Hardware' -Item 'Router' -Resource 'Mike' -Description 'See https://www.cisco.com/?id=12345'
+
+	Will create ticket 'Patch router firmware' for 'ACME Toys' in the 'Maintenance' board, assign Mike to the ticket and set the specified description, type/subttype/item.
+	The ticket status will be set to 'To schedule' (if such a status exists on that board).
+
+	#>
+	[CmdletBinding(DefaultParameterSetname='IDs',SupportsShouldProcess)]
+	Param (
+		[Parameter(Mandatory,ParameterSetname='IDs',ValueFromPipelineByPropertyName)]
+		[Object]$ID,
+		[Parameter(Mandatory,ParameterSetname='Company')]
+		[string]$Company,
+		[Parameter(Mandatory)]
+		[string]$Summary,
+		[string]$Board = 'Service',
+		[string]$Status,
+		[string]$Type,
+		[string]$Subtype,
+		[string]$Item,
+		[Object]$Resource,
+		[Object]$Description,
+		[switch]$PassThru
+	)
+
+	Begin {
+		if(-Not (Start-CWMConnection)) {
+			return $null
+		}
+		$companyIDs = @()
+
+		# Determine is the board exists
+		$boardobj = Get-CWMObject '/service/boards' -Conditions "name = '$Board'"
+		$boardid = $boardobj | Select-Object -ExpandProperty id
+		if (!$boardid) {
+			throw "Board '$Board' cannot be found, aborting."
+		}
+
+		# Determine if the subtype exists for that board
+		# If no status is given, try to use 'Assigned' if there are resources on the ticket, or 'New' if there are not
+		# Abort if those automatic statuses do not exist on the board that is targetted
+		if ($Status) {
+			$statusid = Get-CWMObject "/service/boards/$boardid/statuses" -Conditions "name = '$Status'" -Field id | Select-Object -ExpandProperty id
+			if (!$statusid) {
+				throw "Status '$Status' cannot be found in Board '$Board', aborting."
+			}
+		} elseif ($Resource) {
+			$statusid = Get-CWMObject "/service/boards/$boardid/statuses" -Conditions "name = 'Assigned'" -Field id | Select-Object -ExpandProperty id
+			if (!$statusid) {
+				throw "Auto-assigned Status 'Assigned' cannot be found in Board '$Board', you must set the Status manually, aborting."
+			}
+		} else {
+			$statusid = Get-CWMObject "/service/boards/$boardid/statuses" -Conditions "name = 'New'" -Field id | Select-Object -ExpandProperty id
+			if (!$statusid) {
+				throw "Auto-assigned Status 'New' cannot be found in Board '$Board', you must set the Status manually, aborting."
+			}
+		}
+
+		# Determine if the type exists for that board
+		if ($Type) {
+			$typeid = Get-CWMObject "/service/boards/$boardid/types" -Conditions "name = '$Type'" -Field id | Select-Object -ExpandProperty id
+			if (!$typeid) {
+				throw "Type '$Type' cannot be found in Board '$Board', aborting."
+			}
+		}
+
+		# Determine if the subtype exists for that board
+		if ($Subtype) {
+			$subtypeid = Get-CWMObject "/service/boards/$boardid/subtypes" -Conditions "name = '$Subtype'" -Field id | Select-Object -ExpandProperty id
+			if (!$subtypeid) {
+				throw "Sub-Type '$Subtype' cannot be found in Board '$Board', aborting."
+			}
+		}
+
+		# Determine if the item exists for that board
+		if ($Item) {
+			$itemid = Get-CWMObject "/service/boards/$boardid/Items" -Conditions "name = '$Item'" -Field id | Select-Object -ExpandProperty id
+			if (!$itemid) {
+				throw "Item '$Item' cannot be found in Board '$Board', aborting."
+			}
+		}
+
+		# Determine if the resource(s) exist(s)
+		$resourceids = @()
+		if ($Resource) {
+			$Resource | Foreach-Object {
+				$member = Get-CWMObject '/system/members' -Conditions "identifier = '$_'"
+				if ($member) {
+					$resourceids += $member.id
+				} else {
+					throw "Member '$_' cannot be found, aborting."
+				}
+			}
+		}
+
+		# Prompt for the Description if none was provided ($null), use a UI cmdLet if present, otherwise fall back to console input
+		if ($null -eq $Description) {
+			if (Get-Command Get-TextBoxInput) {
+				$Description = Get-TextBoxInput "Enter the ticket(s) description"
+				if ($null -eq $Description) {
+					throw 'User cancelled input, aborting.'
+				}
+			} else {
+				$userinputstring = @()
+				$userinput = $null
+				Write-Host "Enter the ticket(s) description one line at a time, press <Enter> to add a line. Type 'q' and <Enter> to complete description:"
+				while ($userinput -ne "q") {
+					$userinput = Read-Host
+					if ($userinput -eq "q") {
+						Continue
+					} else {
+						$userinputstring += $userinput
+					}
+				}
+				$Description = $userinputstring -join "`r`n"
+			}
+		}
+	}
+
+	Process {
+
+		# Determine whether we were passed an ID or an entire Ticket object (with an ID property)
+		if ($id.id) {
+			$companyIDs += $id.id
+		} elseif ($id -gt 0) {
+			$companyIDs += $id
+		} else {
+			$companyIDs = Get-CWMObject 'company/companies' -Conditions ("status/name = 'Active' AND name LIKE '{0}'" -f [string]$Company) | Select-Object -ExpandProperty id
+		}
+
+	}
+
+	End {
+		# Verify we have some company(ies) to work with
+		if ($companyIDs.count -eq 0) {
+			throw 'Found no company to create tickets on, aborting.'
+		}
+
+		$ReturnObject = @()
+
+		Add-Type -AssemblyName System.Web;
+		$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+		#$Parameters = [Microsoft.AspNetCore.WebUtilities.QueryHelpers]::ParseQuery([String]::Empty);
+		$Request = [System.UriBuilder]($script:cwmURL + '/service/tickets');
+
+		foreach ($cID in $companyIDs) {
+
+			$Body = [PsCustomObject]@{
+				summary = $Summary
+				board = @{'id' = $boardid}
+				company = @{'id' = $cID}
+				initialDescription = $Description
+			}
+			if ($statusid) { Add-Member -InputObject $Body -MemberType NoteProperty -Name 'status' -Value @{'id' = $statusid} }
+			if ($typeid) { Add-Member -InputObject $Body -MemberType NoteProperty -Name 'type' -Value @{'id' = $typeid} }
+			if ($subtypeid) { Add-Member -InputObject $Body -MemberType NoteProperty -Name 'subtype' -Value @{'id' = $subtypeid} }
+			if ($itemid) { Add-Member -InputObject $Body -MemberType NoteProperty -Name 'item' -Value @{'id' = $itemid} }
+
+			$Body = $Body | ConvertTo-Json
+
+			$Request.Query = $Parameters.ToString();
+	
+			if ($PSCmdlet.ShouldProcess(('{0}' -f $cID),'Create Ticket')) {
+				try {
+					# Create the ticket
+					$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Post -Body $Body -Headers $script:header -ContentType "application/json"
+
+					# Add the resources (if any)
+					if ($resourceids.count) {
+						$result | Add-CWMTicketResource -Member $resourceids
+					}
+				}
+				catch {
+					if (($_.CategoryInfo.Category -eq 'InvalidOperation') -and ($_.CategoryInfo.TargetType -eq 'HttpWebRequest')) {
+						$Msg = $_.ErrorDetails.Message | ConvertFrom-Json | Select-Object @{n='Msg'; e={$_.errors.message}} | Select-Object -ExpandProperty Msg
+						$result = [PSCustomObject]@{
+							'CompanyID' = $cID
+							'Message' = $Msg
+						}
+					} else {
+						# Show the error as it happened
+						$result = $_
+					}
+				}
+				
+			} else {
+				Write-Host 'The URI is' $Request.Uri.AbsoluteUri ', the Body is' $Body
+			}
+	
+			if($result) {
+				$ReturnObject += $result
+			}
+
+		}
+
+		# Pass the object(s) down to the pipeline if we are chaining calls
+		if ($PassThru) {
+			return $ReturnObject
+		} else {
+			return $null
+		}
+	}
+
+}
+
+Function Select-CWMServiceTickets {
+	<#
+	.SYNOPSIS
+
+	Select one or more tickets matching a summary description in specific service boards.
+
+	.DESCRIPTION
+
+	This function will find all tickets matching a partial summary and present a checkbox list to allow further selection.
+
+	The function errors out if more than 50 tickets are returned (runaway search).
+
+	.PARAMETER Summary
+
+	The summary of the ticket(s). Wilcard * accepted for partial match.
+
+	.PARAMETER Board
+
+	The board(s) to search on, defaults to any board matching "Service*"
+	#>
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory)]
+		[string]$Summary,
+		[string]$Board = 'Service*'
+	)
+
+	$tickets = Get-CWMObject 'service/tickets' -Conditions ('summary like "{0}" AND board/name LIKE "{1}" AND closedflag = False AND status/name NOT LIKE "Completed"' -f $Summary, $Board) `
+		-Fields 'id,company,summary,status,board' `
+		| Select-Object `
+			@{n='ID';e={$_.id}}, `
+			@{n='Company';e={$_.company.name}}, `
+			@{n='Summary';e={$_.summary}}, `
+			@{n='Board';e={$_.board.name}}, `
+			@{n='Status';e={$_.status.name}} | Sort-Object Summary, Company
+
+	if ($tickets.count -gt 50) {
+		throw "More than 50 tickets returned, you need to narrow down your search"
+	}
+	if (Get-Command Select-CheckBox -ErrorAction SilentlyContinue) {
+		$tickets | Select-CheckBox -Label {"{0}: {1} / {2} / {3} / {4}" -f $_.ID, $_.Summary, $_.Company, $_.Status, $_.Board} -Width 700
+	} else {
+		$tickets
+	}
+}
+
+Function New-CWMTimeEntry {
+	<#
+	.SYNOPSIS
+
+	Create a time entry in one or more tickets
+
+	.DESCRIPTION
+
+	This function will create a time entry for one or more tickets. If multiple tickets are selected the overall time will be spread evenly among all the tickets.
+
+	This is used to update bulk tickets for work we need to perform across many clients.
+
+	.PARAMETER ID
+
+	One or more Ticket object(s) with an ID property.
+
+	.PARAMETER Status
+
+	The status to set the ticket(s) to. Must be a valid Status for the board where the ticket exists.
+
+	.PARAMETER Start
+
+	The start date and time for this time entry.
+
+	.PARAMETER End
+
+	The end time. Note that this should not contain any date element, time entries are not allowed to span multiple days.
+
+	.PARAMETER Duration
+
+	The duration of the overall time entry. The Start + Duration time should not span the next day, time entries are not allowed to span multiple days.
+
+	.PARAMETER WorkType
+
+	The Work Type to set the time entries to. Must be a valid Work Type for the board where the ticket exists.
+
+	.PARAMETER WorkRole
+
+	The Work Role to set the time entries to. Must be a valid Work Role for the board where the ticket exists.
+
+	.PARAMETER Notes
+
+	The notes for the time entries.
+	If this parameter is omitted, an interactive console prompts for the notes (terminate with 'q').
+	Use -Notes "" to enter no notes.
+
+	.PARAMETER InternalNotes
+
+	The internal notes for the time entries.
+	If this parameter is omitted it is assumed to be empty and no interactive prompt is offered.
+
+	.EXAMPLE
+
+	New-CWMTimeEntry -SummaryMark 'Install widget' -Start '9/10/2020 11:34' -Duration '2:00' -Notes '- updated firmware'
+
+	Will add a time entry to all tickets with a summary of 'Install Widget' with the provided notes.
+	Will added a fraction of the time span from 9/10/2020 11:34 am to 9/10/2020 1:34 pm (2 hours) to each ticket.
+
+	#>
+	[CmdletBinding(SupportsShouldProcess)]
+	Param (
+		[Parameter(Mandatory,ValueFromPipelineByPropertyName)]
+		[Object]$ID,
+		[Object]$Duration,
+		[string]$End,
+		[string]$Start,
+		[string]$Status,
+		[string]$WorkType,
+		[string]$WorkRole,
+		[Object]$Notes,
+		[Object]$InternalNotes,
+		[switch]$PassThru
+	)
+
+	Begin {
+		if(-Not (Start-CWMConnection)) {
+			return $null
+		}
+
+		# Verify that the user didn't specify impossible time conditions
+		if ($Start -and $End -and $Duration) {
+			throw "You can't specify a start, an end and a duration at the same time, aborting."
+		}
+
+		# Convert the duration into a time span, either as a number of minutes or as a text like "hh:mm"
+		if ($Duration) {
+			if ($Duration -is [string]) {
+				try {
+					$span = [datetime]::Parse($Duration)
+				} catch {
+					throw "End parameter is in the wrong format ($_) Use something like '2:00', aborting."
+				}
+				$interval = New-TimeSpan -Hours $span.hour -Minutes $span.minute
+			} else {
+				$interval = New-TimeSpan -Minutes $Duration
+			}
+		} else {
+			$interval = New-TimeSpan
+		}
+
+		# Verify the start date is valid if specified
+		if ($Start) {
+			try {
+				$startPeriod = [datetime]::Parse($Start)
+			} catch {
+				throw "Start parameter is in the wrong format ($_) Use something like '1/31/2019 5:10 pm', aborting."
+			}
+		}
+
+		# Verify the end date is valid if specified
+		if ($End) {
+			try {
+				$endPeriod = [datetime]::Parse($End)
+			} catch {
+				throw "End parameter is in the wrong format ($_) Use something like '1/31/2019 5:10 pm', aborting."
+			}
+		}
+
+		# Process the various combinations
+		# -start + duration
+		# -end + duration
+		# -duration by itself (assumes end is now)
+		# -nothing specified > error
+		if ($Start -and $Duration) {
+			$endPeriod = $startPeriod + $interval
+		} elseif ($End -and $Duration) {
+			$startPeriod = $endPeriod - $interval
+		} elseif ($Duration) {
+			$endPeriod = Get-Date
+			$startPeriod = $endPeriod - $interval
+		} else {
+			throw "You must specify at least two of the three parameters Start, End, Duration, aborting."
+		}
+
+		if (!$interval) {
+			$interval = $endPeriod - $startPeriod
+		}
+		$ticketIDs = @()
+	
+		# Prompt for the Notes if none was provided ($null), use a UI cmdLet if present, otherwise fall back to console input
+		if ($null -eq $Notes) {
+			if (Get-Command Get-TextBoxInput) {
+				$Notes = Get-TextBoxInput "Enter the ticket(s) notes"
+				if ($null -eq $Notes) {
+					throw 'User cancelled input, aborting.'
+				}
+			} else {
+				$userinputstring = @()
+				$userinput = $null
+				Write-Host "Enter the ticket(s) notes one line at a time, press <Enter> to add a line. Type 'q' and <Enter> to complete description:"
+				while ($userinput -ne "q") {
+					$userinput = Read-Host
+					if ($userinput -eq "q") {
+						Continue
+					} else {
+						$userinputstring += $userinput
+					}
+				}
+				$Notes = $userinputstring -join "`r`n"
+			}
+		}
+	}
+
+	Process {
+
+		# Determine whether we were passed an ID or an entire Ticket object (with an ID property)
+		if ($id.id) {
+			$ticketIDs += $id.id
+		} elseif ($id -gt 0) {
+			$ticketIDs += $id
+		}
+
+	}
+
+	End {
+		# Verify we have some company(ies) to work with
+		if ($ticketIDs.count -eq 0) {
+			throw 'Found no tickets to add the time entries to, aborting.'
+		}
+
+		# Calculate the time span for each individual ticket
+		$individualSpan = New-TimeSpan -Seconds ($internval.TotalSeconds / $ticketIDs.count)
+	
+		$ReturnObject = @()
+
+		Add-Type -AssemblyName System.Web;
+		$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+		#$Parameters = [Microsoft.AspNetCore.WebUtilities.QueryHelpers]::ParseQuery([String]::Empty);
+		$Request = [System.UriBuilder]($script:cwmURL + '/service/tickets');
+
+		foreach ($cID in $ticketIDs) {
+
+			$ticket = Get-CWMObject '/service/tickets' -Conditions "id = $cID"
+
+			if ($ticket) {
+
+				$boardid = $ticket.board.id
+
+				# Determine if the status exists for that board
+				# If no status is given, try to use 'Assigned' if there are resources on the ticket, or 'New' if there are not
+				# Abort if those automatic statuses do not exist on the board that is targetted
+				if ($Status) {
+					$statusid = Get-CWMObject "/service/boards/$boardid/statuses" -Conditions "name = '$Status'" -Field id | Select-Object -ExpandProperty id
+					if (!$statusid) {
+						Write-Warning "Status '$Status' cannot be found in Board '$($cID.Board.name)', skipping ticket $cID."
+					}
+				}
+
+				# Determine if the work type exists for that board
+				if ($WorkType) {
+					$typeid = Get-CWMObject "/service/boards/$boardid/worktypes" -Conditions "name = '$WorkType'" -Field id | Select-Object -ExpandProperty id
+					if (!$typeid) {
+						Write-Warning "WorkType '$WorkType' cannot be found in Board '$($cID.Board.name)', skipping ticket $cID."
+					}
+				}
+
+				# Determine if the work role exists for that board
+				if ($WorkRole) {
+					$roleid = Get-CWMObject "/service/boards/$boardid/workroles" -Conditions "name = '$WorkRole'" -Field id | Select-Object -ExpandProperty id
+					if (!$roleid) {
+						Write-Warning "WorkRole '$WorkRole' cannot be found in Board '$($cID.Board.name)', skipping ticket $cID."
+					}
+				}
+
+<#
+				$Body = [PsCustomObject]@{
+					summary = $Summary
+					board = @{'id' = $boardid}
+					company = @{'id' = $cID}
+					initialDescription = $Description
+				}
+				if ($statusid) { Add-Member -InputObject $Body -MemberType NoteProperty -Name 'status' -Value @{'id' = $statusid} }
+				if ($typeid) { Add-Member -InputObject $Body -MemberType NoteProperty -Name 'type' -Value @{'id' = $typeid} }
+				if ($subtypeid) { Add-Member -InputObject $Body -MemberType NoteProperty -Name 'subtype' -Value @{'id' = $subtypeid} }
+				if ($itemid) { Add-Member -InputObject $Body -MemberType NoteProperty -Name 'item' -Value @{'id' = $itemid} }
+
+				$Body = $Body | ConvertTo-Json
+
+				$Request.Query = $Parameters.ToString();
+		
+				if ($PSCmdlet.ShouldProcess(('{0}' -f $cID),'Create Ticket')) {
+					try {
+						# Create the ticket
+						$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Post -Body $Body -Headers $script:header -ContentType "application/json"
+
+						# Add the resources (if any)
+						if ($resourceids.count) {
+							$result | Add-CWMTicketResource -Member $resourceids
+						}
+					}
+					catch {
+						if (($_.CategoryInfo.Category -eq 'InvalidOperation') -and ($_.CategoryInfo.TargetType -eq 'HttpWebRequest')) {
+							$Msg = $_.ErrorDetails.Message | ConvertFrom-Json | Select-Object @{n='Msg'; e={$_.errors.message}} | Select-Object -ExpandProperty Msg
+							$result = [PSCustomObject]@{
+								'CompanyID' = $cID
+								'Message' = $Msg
+							}
+						} else {
+							# Show the error as it happened
+							$result = $_
+						}
+					}
+					
+				} else {
+					Write-Host 'The URI is' $Request.Uri.AbsoluteUri ', the Body is' $Body
+				}
+		
+				if($result) {
+					$ReturnObject += $result
+				}
+#>
+			}
+
+		}
+
+		# Pass the object(s) down to the pipeline if we are chaining calls
+		if ($PassThru) {
+			return $ReturnObject
+		} else {
+			return $null
+		}
+	}
+#>
+}
+
+Function New-CWMAgreementAddition {
+	[CmdletBinding(SupportsShouldProcess)]
+	Param (
+		[Parameter(Mandatory, ValueFromPipelineByPropertyName)]
+		[int[]]$agreement_id,
+
+		[Parameter(ValueFromPipelineByPropertyName)]
+		[string[]]$agreement_name,
+
+		[Parameter(Mandatory, ValueFromPipelineByPropertyName)]
+		[int[]]$product_id,
+
+		[Parameter(ValueFromPipelineByPropertyName)]
+		[string[]]$product_name,
+
+		[Parameter(Mandatory, ValueFromPipelineByPropertyName)]
+		[float[]]$quantity,
+
+		[Parameter(Mandatory, ValueFromPipelineByPropertyName)]
+		[string[]]$invoiceDescription,
+
+		[Parameter(Mandatory, ValueFromPipelineByPropertyName)]
+		[string[]]$effectiveDate,
+
+		[Parameter(Mandatory, ValueFromPipelineByPropertyName)]
+		[string[]]$cancelledDate,
+
+		[Parameter(ValueFromPipelineByPropertyName)]
+		[float[]]$unit_price,
+
+		[switch]$UseAdditionUnitPrice,
+
+		[Parameter(ValueFromPipelineByPropertyName)]
+		[float[]]$unit_cost,
+
+		[switch]$UseAdditionUnitCost
+	)
+
+	# Initialize the connection if it has expired (or is not active yet)
+	BEGIN {
+
+		if(-Not (Start-CWMConnection)) {
+			return $null;
+		}
+
+		$ReturnObject = @()
+		$RESTErrors = @()
+	}
+
+	# Walk the Additions and create them in CW
+	PROCESS {
+
+		Add-Type -AssemblyName System.Web;
+		$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+		#$Parameters = [Microsoft.AspNetCore.WebUtilities.QueryHelpers]::ParseQuery([String]::Empty);
+		$Request = [System.UriBuilder]($script:cwmURL + '/finance/agreements/' + $agreement_id + '/additions');
+
+		# Build the new addition
+        $Body = [PsCustomObject]@{
+            product = @{'id' = $product_id[0]}
+			quantity = $quantity[0]
+			billCustomer = 'Billable'
+            invoiceDescription = $invoiceDescription[0]
+            effectiveDate = $effectiveDate[0]
+            cancelledDate = $cancelledDate[0]
+		}
+
+		# Add the unit price listed for this specific addition (otherwise will use the product's unit price by default)
+		if ($UseAdditionUnitPrice) {
+			$Body | Add-Member -MemberType NoteProperty -Name 'unitPrice' -Value $unit_price[0]
+		}
+
+		# Add the unit cost listed for this specific addition (otherwise will use the product's unit cost by default)
+		if ($UseAdditionUnitCost) {
+			$Body | Add-Member -MemberType NoteProperty -Name 'unitCost' -Value $unit_cost[0]
+		}
+
+		# Convert to a REST body in JSON format
+		$BodyJSON = $Body | ConvertTo-Json
+
+		$Request.Query = $Parameters.ToString();
+
+		if ($PSCmdlet.ShouldProcess(('{0}/{1}' -f $agreement_id[0], $product_id[0]),'Create Addition')) {
+			try {
+				$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Post -Body $BodyJSON -Headers $script:header -ContentType "application/json"
+			}
+			catch {
+				if (($_.CategoryInfo.Category -eq 'InvalidOperation') -and ($_.CategoryInfo.TargetType -eq 'HttpWebRequest')) {
+					$Msg = $_.ErrorDetails.Message | ConvertFrom-Json | Select-Object @{n='Msg'; e={$_.errors.message}} | Select-Object -ExpandProperty Msg
+					$RESTErrors += [PSCustomObject]@{
+						'Agreement' = Get-CWMObject ('finance/agreements/{0}' -f $agreement_id[0]) -Fields 'name' | Select-Object -ExpandProperty name
+						'Description' = $invoiceDescription[0]
+						'Message' = $Msg
+						'Effective Date' = $effectiveDate[0]
+						'Cancelled Date' = $cancelledDate[0]
+					}
+				} else {
+					# Show the error as it happened
+					$_
+				}
+			}
+			
+        } else {
+			Write-Host 'The URI is' $Request.Uri.AbsoluteUri ', the Body is' $Body
+		}
+
+		if($result) {
+			$ReturnObject += $result;
+		}
+
+	}
+
+	END {
+		if($RESTErrors.Count) {
+			$RESTErrors | ForEach-Object {
+				Write-Warning ($_ | Format-List | Out-String)
+			}
+		}
+		return $ReturnObject;
+	}
+
+}
+
+Function Get-CWMAgreementAdditions {
+	[CmdletBinding()]
+	Param (
+		[string[]]$AgreementTypes = $null,
+
+        [Parameter(Mandatory)]
+    	[ValidateScript({
+            try{[datetime]::ParseExact($_, 'd', [System.Globalization.CultureInfo](Get-Culture))}catch{throw "Datetime is in the wrong format ($_) Use this format 1/31/2019"}
+        })]
+        [string]$EffectiveDate,
+    
+        [ValidateScript({
+			if($psitem) {
+				try{[datetime]::ParseExact($psitem, 'd', [System.Globalization.CultureInfo](Get-Culture))}catch{throw "Datetime is in the wrong format ($_) Use this format 1/31/2019"}
+			} else {
+				$True
+			}
+
+        })]
+		[string]$CancelledDate,
+		
+		[switch]$IgnoreCancelDate = $false,
+		
+		[switch]$AddUnitPrice = $false,
+
+		[switch]$AddUnitCost = $false
+
+	)
+
+	# Only Additions starting on or after effectiveDate
+	$eDateCondition = "effectiveDate >= [{0}]" -f ([datetime]$EffectiveDate).ToUniversalTime().ToString("yyyy-MM-ddT00:00:00Z")
+	Write-Verbose "eDateCondition = '$eDateCondition'"
+
+	# Either Additions cancelled on or before cancelledDate, or Additions with no cancelledDate
+	if($CancelledDate) {
+		$cDateCondition = "AND cancelledDate <= [{0}]" -f ([datetime]$CancelledDate).ToUniversalTime().ToString("yyyy-MM-ddT00:00:00Z")
+	} elseif ($IgnoreCancelDate) {
+		$cDateCondition = ""
+	} else {
+		$cDateCondition = "AND cancelledDate = null"
+	}
+	Write-Verbose "cDateCondition = '$cDateCondition'"
+
+	# Only pull current Agreements, build the Agreement Type condition if one or more are provided, add wildcard to catch matching Agreement Type
+	$agrTypesCondition = 'cancelledFlag = False AND agreementStatus = "Active"'
+	if($AgreementTypes) {
+		$agrTypesCondition += ' AND ('
+		$agrTypesCondition += (($AgreementTypes | ForEach-Object {"type/name LIKE '$_*'"}) -join ' OR ')
+		$agrTypesCondition += ')'
+	};
+	Write-Verbose "agrTypesCondition = '$agrTypesCondition'"
+
+	$agreements = Get-CWMObject -Verbose:$False -Endpoint '/finance/agreements' -Conditions $agrTypesCondition
+	$cnt = 0; $maxcnt = $agreements.count;
+	Write-Verbose "Found $maxcnt Agreements to process"
+
+	$agreements | Select-Object id, name -PipelineVariable agr | ForEach-Object {
+
+		$cnt++; if ($maxcnt) { Write-Progress -activity 'Reading Agreements' -CurrentOperation $agr.name -PercentComplete (($cnt / $maxcnt) * 100) }
+
+		Get-CWMObject -Verbose:$False -Endpoint "/finance/agreements/$($agr.id)/additions" -Conditions "$eDateCondition $cDateCondition" | ForEach-Object {
+			$additionObj = [PSCustomObject]@{
+				agreement_id = $agr.id;
+				agreement_name = $agr.name;
+				product_id = $_.product.id;
+				product_name = $_.product.identifier;
+				quantity = $_.quantity;
+				effectiveDate = $_.effectiveDate;
+				cancelledDate = $_.cancelledDate;
+				invoiceDescription = $_.invoiceDescription;
+			}
+			# Add the unit price listed for this specific addition
+			if ($AddUnitPrice) {
+				$additionObj | Add-Member -MemberType NoteProperty -Name 'unit_price' -Value $_.unitprice
+			}
+
+			# Add the unit cost listed for this specific addition
+			if ($AddUnitCost) {
+				$additionObj | Add-Member -MemberType NoteProperty -Name 'unit_cost' -Value $_.unitcost
+			}
+			$additionObj
+		}
+
+	}
+	
+}
+
+Function Remove-CWMAgreementAdditions {
+	[CmdletBinding(SupportsShouldProcess)]
+	Param (
+		[string[]]$AgreementTypes = $null,
+
+        [Parameter(Mandatory)]
+    	[ValidateScript({
+            try{[datetime]::ParseExact($_, 'd', [System.Globalization.CultureInfo](Get-Culture))}catch{throw "Datetime is in the wrong format ($_) Use this format 1/31/2019"}
+        })]
+        [string]$EffectiveDate,
+    
+        [ValidateScript({
+			if($psitem) {
+				try{[datetime]::ParseExact($psitem, 'd', [System.Globalization.CultureInfo](Get-Culture))}catch{throw "Datetime is in the wrong format ($_) Use this format 1/31/2019"}
+			} else {
+				$True
+			}
+
+        })]
+        [string]$CancelledDate
+
+	)
+
+	# Only Additions starting on or after effectiveDate
+	$eDateCondition = "effectiveDate >= [{0}]" -f ([datetime]$EffectiveDate).ToUniversalTime().ToString("yyyy-MM-ddT00:00:00Z")
+	Write-Verbose "eDateCondition = '$eDateCondition'"
+
+	# Either Additions cancelled on or before cancelledDate, or Additions with no cancelledDate
+	if($CancelledDate) {
+		$cDateCondition = "cancelledDate >= [{0}]" -f ([datetime]$CancelledDate).ToUniversalTime().ToString("yyyy-MM-ddT00:00:00Z")
+	} else {
+		$cDateCondition = "cancelledDate = null"
+	}
+	Write-Verbose "cDateCondition = '$cDateCondition'"
+
+	# Only pull current Agreements, build the Agreement Type condition if one or more are provided, add wildcard to catch matching Agreement Type
+	$agrTypesCondition = 'cancelledFlag = False AND agreementStatus = "Active"'
+	if($AgreementTypes) {
+		$agrTypesCondition += ' AND ('
+		$agrTypesCondition += (($AgreementTypes | ForEach-Object {"type/name LIKE '$_*'"}) -join ' OR ')
+		$agrTypesCondition += ')'
+	};
+	Write-Verbose "agrTypesCondition = '$agrTypesCondition'"
+
+	$agreements = Get-CWMObject -Verbose:$False -Endpoint '/finance/agreements' -Conditions $agrTypesCondition
+	$cnt = 0; $maxcnt = $agreements.count;
+	Write-Verbose "Found $maxcnt Agreements to process"
+
+	$deletedAdditions = 0
+
+	$agreements | Select-Object id, name -PipelineVariable agr | ForEach-Object {
+
+		if ($maxcnt) {$cnt++; Write-Progress -activity 'Reading Agreements' -CurrentOperation $agr.name -PercentComplete (($cnt / $maxcnt) * 100)}
+
+		Get-CWMObject -Verbose:$False -Endpoint "/finance/agreements/$($agr.id)/additions" -Conditions "$eDateCondition AND $cDateCondition" | ForEach-Object {
+
+			# Return the Addition that wiil be deleted
+			[PSCustomObject]@{
+				agreement_id = $agr.id;
+				agreement_name = $agr.name;
+				product_id = $_.product.id;
+				product_name = $_.product.identifier;
+				quantity = $_.quantity;
+				effectiveDate = $_.effectiveDate;
+				cancelledDate = $_.cancelledDate;
+				invoiceDescription = $_.invoiceDescription;
+			}
+
+			# Delete the Addition
+			Add-Type -AssemblyName System.Web;
+			$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty);
+			#$Parameters = [Microsoft.AspNetCore.WebUtilities.QueryHelpers]::ParseQuery([String]::Empty);
+
+			$Request = [System.UriBuilder]($script:cwmURL + '/finance/agreements/' + ($_.agreementId) + '/additions/' + ($_.id));
+	
+			$Request.Query = $Parameters.ToString();
+	
+			if ($PSCmdlet.ShouldProcess(('{0}' -f $_.id),'Delete Addition')) {
+				Invoke-RestMethod -Uri "$($Request.Uri)" -Method Delete -Headers $script:header -ContentType "application/json" | Out-Null
+			}
+
+			$deletedAdditions++
+		}
+
+	}
+
+	Write-Host "Deleted $deletedAdditions Additions"
+}
+
+
+Function Convert-TimeEntryToIIF {
+	Param (
+		[CmdletBinding()]
+
+		[Parameter(Mandatory)]
+		[String]$Identifier,
+
+		[string]$FilePath,
+		
+        [Parameter(Mandatory)]
+    	[ValidateScript({
+			try{[datetime]::Parse($psitem)}catch{throw "Datetime is in the wrong format ($_) Use this format 1/31/2019"}
+        })]
+        [string]$TimeStart,
+   
+		[Parameter(Mandatory)]
+		[ValidateScript({
+			try{[datetime]::Parse($psitem)}catch{throw "Datetime is in the wrong format ($_) Use this format 1/31/2019"}
+		})]
+		[string]$TimeEnd,
+
+		[Switch]$SkipIIF,
+
+		[Switch]$ReportToMembers,
+
+		[Switch]$ReportToManagers,
+
+		[string]$RuleFile = "$ENV:USERPROFILE\WST\Operations - General\Business Processes\Service Delivery\TimeEntryRules.csv"
+
+	)
+
+	# If we will produce an IIF, check that the destination file is valid
+	if(!($SkipIIF)) {
+		if (-not(Test-Path -Path $FilePath -IsValid)) {
+			throw "The FilePath $FilePath appears invalid, please verify this a valid file path/name"
+		}
+	}
+
+	if (-not(Test-Path -Path $RuleFile)) {
+		throw "Unable to open time entry rules file at '$RuleFile', please verify that you have access to that file"
+	}
+
+	$rows = @();
+	$errorRows = @();
+
+	$chargeCodes = Get-CWMObject -Verbose:$False -Endpoint '/time/chargeCodes' | Select-Object id, name
+	$maxChargeCode = ($chargeCodes | Measure-Object -Property id -Maximum).Maximum
+
+	$teRules = Import-Csv -Path $RuleFile | `
+		Select-Object * -ExcludeProperty Activity,Priority,Why,Bilable | `
+		Sort-Object {$_.R -as [int]}, WorkRole, WorkType
+
+	# Note that for the TimeEnd we calculate the end of the day as "one minute before tomorrow"
+	$Condition = "timeStart >= [{0:yyyy-MM-ddThh:mm:ssZ}] AND timeEnd <= [{1:yyyy-MM-ddThh:mm:ssZ}] AND member/identifier LIKE '{2}'" -f ([datetime]$TimeStart).ToUniversalTime(), ([datetime]$TimeEnd).AddDays(1).AddMinutes(-1).ToUniversalTime(), $Identifier
+
+	$timeEntries = Get-CWMObject -Endpoint 'time/entries' -Conditions $Condition -PageSize 1000 -Fields 'timeStart,timeEnd,member,company,ChargeToType,ChargeToId,workType,workRole,actualHours,agreement,notes,internalNotes'
+
+	$cnt = 0
+	$maxcnt = $timeEntries.Count
+
+	$timeEntries | Select-Object -PipelineVariable timeEntry | Foreach-Object {
+	
+		## Generic informaiton about this Time Entry
+		$TEDate = ([DateTime]::Parse($timeEntry.timeStart)).ToString('M/d/yyyy')
+		$TEMember = $timeEntry.member.name
+		$TEMemberID = $timeEntry.member.id
+		$TETimeStart = ([DateTime]($timeEntry.timeStart)).ToString('hh:mm:ss tt')
+		$TETimeEnd = ([DateTime]($timeEntry.timeEnd)).ToString('hh:mm:ss tt')
+		$TEJob = $timeEntry.company.name
+		$TEChargeToType = $timeEntry.ChargeToType
+		if ($TEChargeToType -ne 'ChargeCode') {
+			$TETicketID = $timeEntry.ChargeToId
+		} else {
+			$TETicketID = ''
+		}
+		$TEWorkRole = $timeEntry.workRole.Name
+		$TEWorkType = $timeEntry.workType.Name
+		$TKTAgreement = 'no'
+		$TEAgreement = 'no'
+		$TEBoard = 'no'
+		$TETicketItem = ''
+		$TEMemberCN = ''
+		$TEMemberDD = ''
+		$TEMemberDS = ''
+		$TEMemberEM = ''
+		$TEMemberEN = ''
+		$TEMemberFN = ''
+		$TEMemberHG = ''
+		$TEMemberMB = ''
+		$TEMemberRH = ''
+		$TEMemberZM = ''
+		$TENotes = ''
+		$Item = ''
+		$PItem = ''
+
+		$cnt++; if ($maxcnt) { Write-Progress -activity 'Reading Time Entries' -CurrentOperation "$TEDate / $TEMember" -PercentComplete (($cnt / $maxcnt) * 100) }
+
+		# Determine the Agreement type if there is an Agreement on this time entry
+		if ($timeEntry.agreement.id) {
+			$agreement = Get-CWMObject -Endpoint ('finance/agreements/{0}' -f $timeEntry.agreement.id)
+			if ($agreement) {
+				$TEAgreement = $agreement.type.name
+			}
+		}
+
+		# Determine the ChargeCode, Agreement type and Board names, based on the ChargeToType
+		if ($TEChargeToType -eq 'ChargeCode') {
+			$TEChargeCode = $chargeCodes | Where-Object {$_.id -eq $timeEntry.ChargeToId} | Select-Object -First 1 -ExpandProperty name
+		} else {
+			$TEChargeCode = '*'
+			if ($TEChargeToType -eq 'ServiceTicket') {
+				$ticket = Get-CWMObject ('/service/tickets/{0}' -f $timeEntry.ChargeToId)
+			} else {
+				$ticket = Get-CWMObject ('/project/tickets/{0}' -f $timeEntry.ChargeToId)
+			}
+			if ($ticket) {
+				if ($ticket.agreement.id) {
+					$agreement = Get-CWMObject -Endpoint ('finance/agreements/{0}' -f $ticket.agreement.id)
+					if ($agreement) {
+						$TKTAgreement = $agreement.type.name
+					}
+				}
+				# Make sure the Agreement on the ticket matches the Agreement on the time entry
+				if ($TEAgreement -ne $TKTAgreement) {
+					$TEAgreement = 'Mismatch-TimeEntry-Ticket'
+				}
+				if ($ticket.board.id) {
+					$TEBoard = $ticket.board.name
+				}
+				if ($ticket.item.id) {
+					$TETicketItem = $ticket.item.name
+				}
+			}
+		}
+
+		# Determine the operator
+		switch ($TEMember) {
+			'Christian Nancy' { $TEMemberCN = 'x' }
+			'Daniel Dostal' { $TEMemberDD = 'x' }
+			'Don Stanisich' { $TEMemberDS = 'x' }
+			'Erik Metzler' { $TEMemberEM = 'x' }
+			'Eleanor Nykamp' { $TEMemberEN = 'x' }
+			'Frederick Nel' { $TEMemberFN = 'x' }
+			'Howard Gumbel' { $TEMemberHG = 'x' }
+			'Miriam Block' { $TEMemberMB = 'x' }
+			'Ryan Hanley' { $TEMemberRH = 'x' }
+			'Zach Mesel' { $TEMemberZM = 'x' }
+			'' { $TEMember = 'x' }
+		}
+
+		$TENotes = $timeEntry.notes + $timeEntry.internalNotes
+
+		# Find a matching rule
+		$matchingRule = $teRules | Where-Object {
+			(($TEMemberCN -eq $_.CN) -or ($_.CN -eq 'x')) -and `
+			(($TEMemberDD -eq $_.DD) -or ($_.DD -eq 'x')) -and `
+			(($TEMemberDS -eq $_.DS) -or ($_.DS -eq 'x')) -and `
+			(($TEMemberEM -eq $_.EM) -or ($_.EM -eq 'x')) -and `
+			(($TEMemberEN -eq $_.EN) -or ($_.EN -eq 'x')) -and `
+			(($TEMemberFN -eq $_.FN) -or ($_.FN -eq 'x')) -and `
+			(($TEMemberHG -eq $_.HG) -or ($_.HG -eq 'x')) -and `
+			(($TEMemberMB -eq $_.MB) -or ($_.MB -eq 'x')) -and `
+			(($TEMemberRH -eq $_.HR) -or ($_.RH -eq 'x')) -and `
+			(($TEMemberZM -eq $_.ZM) -or ($_.ZM -eq 'x')) -and `
+			($TEChargeToType -like $_.ChargeToType) -and `
+			($TEChargeCode -like $_.ChargeCode) -and `
+			(($TEAgreement -in ($_.Agreement -split ',')) -or ($TEAgreement -like $_.Agreement)) -and `
+			($TEJob -like $_.Company) -and `
+			($TEBoard -like $_.Board) -and `
+			($TETicketItem -like $_.TicketItem) -and `
+			($TENotes -like $_.Notes) -and `
+			($TEWorkRole -like $_.WorkRole) -and `
+			($TEWorkType -like $_.WorkType)
+		} | Select-Object -First 1
+
+		if ($matchingRule) {
+
+			# If we found a rule, get the corresponding IIF entities
+			$Item = $matchingRule.Item
+			$PItem = $matchingRule.RevenueBucket
+
+			# Generate a row only if we parsed the time entry to a known type
+			if ($PItem) {
+				$row = [PSCustomObject]@{
+					TIMEACT = 'TIMEACT';
+					DATE = $TEDate;
+					JOB = $TEJob;
+					EMP = $TEMember;
+					ITEM = $Item #($Item -replace '[^ -x7e]', ' ');
+					PITEM = $PItem #($PItem -replace '[^ -x7e]', ' ');
+					DURATION = ("{0:n2}" -f $timeEntry.actualHours);
+					PROJ = '';
+					NOTE = if ($timeEntry.ChargeToId -gt $maxChargeCode) {"{0} - {1}" -f $TEJob, $timeEntry.ChargeToId} else {$teJob};
+					XFERTOPAYROLL = '';
+					BILLINGSTATUS = 0;
+				}
+				$rows += $row
+			}
+
+			if ($matchingRule.Notify -ne 'No') {
+
+				# Create a line item for this time entry
+				$errorRow = [PSCUstomObject]@{
+					CN = $TEMemberCN
+					DD = $TEMemberDD
+					DS = $TEMemberDS
+					EM = $TEMemberEM
+					EN = $TEMemberEN
+					FN = $TEMemberFN
+					HG = $TEMemberHG
+					MB = $TEMemberMB
+					RH = $TEMemberRH
+					ZM = $TEMemberZM
+					ChargeToType = $TEChargeToType
+					ChargeCode = $TEChargeCode
+					Agreement = $TEAgreement
+					Company = $TEJob
+					Board = $TEBoard
+					TicketItem = $TETicketItem
+					WorkRole = $TEWorkRole
+					WorkType = $TEWorkType
+					TEDate = $TEDate
+					TETimeStart = $TETimeStart
+					TETimeEnd = $TETimeEnd
+					TETicketID = $TETicketID
+					TEMemberID = $TEMemberID
+					Reason = $matchingRule.Notify
+					Rule = $matchingRule.R
+				}
+				$errorRows += $errorRow
+
+			}
+
+		} else {
+
+			# THIS SHOULD NEVER HAPPEN: Create a line item for this time entry
+			$errorRow = [PSCUstomObject]@{
+				CN = $TEMemberCN
+				DD = $TEMemberDD
+				DS = $TEMemberDS
+				EM = $TEMemberEM
+				EN = $TEMemberEN
+				FN = $TEMemberFN
+				HG = $TEMemberHG
+				MB = $TEMemberMB
+				RH = $TEMemberRH
+				ZM = $TEMemberZM
+				ChargeToType = $TEChargeToType
+				ChargeCode = $TEChargeCode
+				Agreement = $TEAgreement
+				Company = $TEJob
+				Board = $TEBoard
+				TicketItem = $TETicketItem
+				WorkRole = $TEWorkRole
+				WorkType = $TEWorkType
+				TEDate = $TEDate
+				TETimeStart = $TETimeStart
+				TETimeEnd = $TETimeEnd
+				TETicketID = $TETicketID
+				TEMemberID = $TEMemberID
+				Reason = "UNMATCHED RULE, SEE CHRISTIAN"
+				Rule = 0
+			}
+			$errorRows += $errorRow
+
+		}
+
+	}
+
+	# Report errors
+	if ($errorRows.count -gt 0) {
+
+		# Either email the members the errors found in their time entries or report them to the console
+		if ($ReportToMembers) {
+
+			$errorRows | Group-Object -Property TEMemberID | ForEach-Object {
+				$member = Get-CWMObject "/system/members/$($_.Name)"
+				$errors = $_.Group | Select-Object * -ExcludeProperty AK,DD,HG,EM,CN,ZM,DS
+
+				$From = 'christian@wooden-spoon.com'
+				$To = $member.officeEmail
+				if ($ReportToManagers) {
+					$Cc = @('erik@wooden-spoon.com','francis@wooden-spoon.com')
+				} else {
+					$Cc = ''
+				}
+				$Subject = ('There are errors in your time entries for the period {0} to {1}' -f $TimeStart, $TimeEnd)
+				$Body = "Some time entries could not be matched to any time entry rule, please modify those time entries.`r`n`r`n"
+				$Body += "You can review the rules in speadsheet 'How to prioritize and capture work.xlsx' found in https://woodenspoon.itglue.com/1837583/documents/folder/2676147/.`r`n`r`n"
+				$Body += "Here are the unmatched entries`r`n"
+				$Body += ($errors | Out-String)
+				$Body += "Thank you"
+				$SMTPServer = "outbound.wooden-spoon.com"
+				$SMTPPort = "25"
+				Send-MailMessage -From $From -To $To -Cc $Cc -Subject $Subject -Body $Body -SmtpServer $SMTPServer -port $SMTPPort
+				Write-Host -ForegroundColor Yellow "Notifying $($member.FirstName) that some entries have errors"
+			}
+
+		} else {
+
+			$errorRows
+
+		}
+		
+	} else {
+
+		Write-Host -ForegroundColor Green "No time entry rule violation detected"
+
+	}
+
+	# Generate an IIF file if requested
+	if(!($SkipIIF)) {
+
+		# Convert to IIF which is a tab separated file format
+		$tsv = ($rows | ConvertTo-Csv -Delimiter "`t" -NoTypeInformation)
+
+		# Add "!" at the start of the header, as required by the IIF specification, only if there is an actual header
+		if($tsv.count) {
+			$tsv[0] = ($tsv[0] -replace 'TIMEACT', '!TIMEACT')
+		}
+
+		# Save to file name provided
+		$tsv | Set-Content -Path $filePath -Force
+
+	}
+}
+
+function Invoke-CWMTimeEntryDailyCheck {
+	
+}
+
+Function Get-CWMTimeEntry {
+	Param (
+		[Parameter()]
+		[String]$Identifier = '',
+
+        [Parameter(Mandatory)]
+    	[ValidateScript({
+			try{[datetime]::Parse($psitem)}catch{throw "Datetime is in the wrong format ($_) Use this format 1/31/2019"}
+        })]
+        [string]$TimeStart,
+   
+		[Parameter(Mandatory)]
+		[ValidateScript({
+			try{[datetime]::Parse($psitem)}catch{throw "Datetime is in the wrong format ($_) Use this format 1/31/2019"}
+		})]
+		[string]$TimeEnd
+
+	)
+
+	$Condition = "timeStart >= [{0}] AND timeEnd <= [{1}] AND member/identifier LIKE '%{2}%'" -f ([datetime]$TimeStart).ToUniversalTime().ToString("yyyy-MM-ddThh:mm:ssZ"), ([datetime]$TimeEnd).ToUniversalTime().AddDays(1).ToString("yyyy-MM-ddThh:mm:ssZ"), $Identifier
+	$timeEntries = Get-CWMObject -Verbose:$False -Endpoint 'time/entries' -Conditions $Condition -PageSize 1000
+
+	# Extract the ticket IDs in batches
+	$ticketIDs = ($timeEntries | Where-Object chargeToType -eq 'ServiceTicket' | Sort-Object chargeToId -Unique | Select-Object -ExpandProperty chargeToId -Unique)
+	$batchSize = 50
+	$ticketIndex = 0
+	$ticketTSIs = @()
+	do {
+		# Get all those tickets
+		$ticketIDCondition = ($ticketIDs[($ticketIndex)..($ticketIndex+$batchSize-1)]) -join ','
+		$ticketTSIs += Get-CWMObject -Endpoint '/service/tickets' -Conditions ('id IN ({0})' -f $ticketIDCondition) -Fields 'id,type,subtype,item'
+		$ticketIndex += $batchSize
+	} while ($ticketIndex -lt $ticketIDs.Count)
+
+	$timeEntries | ForEach-Object {
+		$te = $_
+		$thisTSI = $ticketTSIs | Where-Object {$te.chargeToId -eq $_.id}
+		if ($thisTSI) {
+			$te | Add-Member -MemberType NoteProperty -Name 'Type' -Value $thisTSI.type
+			$te | Add-Member -MemberType NoteProperty -Name 'Subtype' -Value $thisTSI.subtype
+			$te | Add-Member -MemberType NoteProperty -Name 'Item' -Value $thisTSI.item
+		}
+	}
+
+	$timeEntries
+
+}
+
+Function Get-CWMTimeEntryNotes {
+	Param (
+		[Parameter()]
+		[String]$Identifier = '',
+
+        [Parameter(Mandatory)]
+    	[ValidateScript({
+			try{[datetime]::Parse($psitem)}catch{throw "Datetime is in the wrong format ($_) Use this format 1/31/2019"}
+        })]
+        [string]$TimeStart,
+   
+		[Parameter(Mandatory)]
+		[ValidateScript({
+			try{[datetime]::Parse($psitem)}catch{throw "Datetime is in the wrong format ($_) Use this format 1/31/2019"}
+		})]
+		[string]$TimeEnd
+
+	)
+
+	Get-CWMTimeEntry -Identifier $Identifier -TimeStart $TimeStart -TimeEnd $TimeEnd | `
+		Select-Object @{n='Company';e={$_.company.name}}, `
+			ChargeToType, `
+			ChargeToID, `
+			@{n='Summary';e={$_.ticket.summary}}, `
+			@{n='Member';e={$_.member.name}}, `
+			@{n='TimeStart';e={[datetime]($_.timeStart)}}, `
+			@{n='TimeEnd';e={[datetime]($_.timeEnd)}}, `
+			@{n='WorkRole';e={$_.workRole.name}}, `
+			@{n='WorkType';e={$_.workType.name}}, `
+			@{n='Hours';e={$_.actualHours}}, `
+			@{n='Type';e={$_.Type.name}}, `
+			@{n='SubType';e={$_.SubType.name}}, `
+			@{n='Item';e={$_.Item.name}}, `
+			Notes | `
+		Sort-Object Company,ChargeToType,ChargeToID,Member,Date
+}
+
+Function Get-CWMScoreCardMetrics {
+	Param (
+        [Parameter(Mandatory)]
+    	[ValidateScript({
+			try{[datetime]::Parse($psitem)}catch{throw "Datetime is in the wrong format ($_) Use this format 1/31/2019"}
+        })]
+		[string]$EndingOn,
+		
+		[int]$PriorDays = 6
+	)
+
+	# period
+	[datetime]$periodEnd = $EndingOn
+	[datetime]$periodStart = $periodEnd.AddDays(0 - $PriorDays)
+
+	# number of endpoints managed (MSP and others, Windows endpoints only, by Server/Workstation and MSP/Non-MSP):
+	Write-Verbose 'Getting list of Automate endpoints'
+	$mspClients = Get-CWMObject 'finance/agreements' -Conditions 'cancelledflag = FALSE AND type/name LIKE "MSP - Level*"' -Fields 'id,name,type,company' -PageSize 1000 | Select-Object -ExpandProperty company | Select-Object -ExpandProperty name
+	$endpointsManaged = Get-CWAComputersLite
+	Write-Verbose "Found $($endpointsManaged.Count) Automate endpoints"
+	$endpointsManagedServer =			($endpointsManaged | Where-Object {$_.OperatingSystem -like '*windows*' -and $_.OperatingSystem -like '*server*'    -and $_.Client -in $mspclients} | Measure-Object).Count
+	$endpointsManagedWorkstation =		($endpointsManaged | Where-Object {$_.OperatingSystem -like '*windows*' -and $_.OperatingSystem -notlike '*server*' -and $_.Client -in $mspclients} | Measure-Object).Count
+	$endpointsUnManagedServer =			($endpointsManaged | Where-Object {$_.OperatingSystem -like '*windows*' -and $_.OperatingSystem -like '*server*'    -and $_.Client -notin $mspclients} | Measure-Object).Count
+	$endpointsUnManagedWorkstation =	($endpointsManaged | Where-Object {$_.OperatingSystem -like '*windows*' -and $_.OperatingSystem -notlike '*server*' -and $_.Client -notin $mspclients} | Measure-Object).Count
+
+	# number of MSP users under contract:
+	Write-Verbose 'Getting list of managed users'
+	$usersManaged = (Convert-IntegrationatorManageSource -EffectiveDate $periodStart.ToString('MM/dd/yyyy') | Measure-Object quantity -Sum).Sum
+	Write-Verbose "Found $($usersManaged) managed users"
+
+	# number of reactive tickets created over period
+	Write-Verbose 'Getting list of created reactive tickets'
+	$reactiveTicketsCreated = Get-CWMObject -Verbose:$False -Endpoint 'service/tickets' -Conditions ("_info/dateEntered >= [{0:yyyy-MM-dd}T00:00:00Z] AND _info/dateEntered <= [{1:yyyy-MM-dd}T23:59:59Z] AND board/name LIKE 'service*' AND type/name = 'Incident'" -f $periodStart, $periodEnd) | Where-Object {$null -eq $_.mergedParentTicket}
+	$reactiveTicketsCreatedCount = ($reactiveTicketsCreated | Measure-Object).Count
+	Write-Verbose "Found $($reactiveTicketsCreatedCount) reactive tickets"
+
+	# number of reactive tickets closed over period
+	Write-Verbose 'Getting list of closed reactive tickets'
+	$reactiveTicketsClosed = Get-CWMObject -Verbose:$False -Endpoint 'service/tickets' -Conditions ("((_info/lastUpdated >= [{0:yyyy-MM-dd}T00:00:00Z] AND _info/lastUpdated <= [{1:yyyy-MM-dd}T23:59:59Z]) OR (closedDate >= [{0:yyyy-MM-dd}T00:00:00Z] AND closedDate <= [{1:yyyy-MM-dd}T23:59:59Z])) AND board/name LIKE 'service*' AND type/name = 'Incident' AND (status/name = 'Completed' OR closedFlag = True)" -f $periodStart, $periodEnd) | Where-Object {$null -eq $_.mergedParentTicket}
+	$reactiveTicketsClosedCount = ($reactiveTicketsClosed | Measure-Object).Count
+	Write-Verbose "Found $($reactiveTicketsClosedCount) closed reactive tickets"
+
+	# number of completed tickets not closed yet
+	Write-Verbose 'Getting list of completed but not closed tickets'
+	$completedNotClosedTickets = Get-CWMObject -Verbose:$False -Endpoint 'service/tickets' -Conditions ("board/name LIKE 'service*' AND closedFlag = False AND status/name LIKE 'comp*' AND actualHours > 0") | Where-Object {$null -eq $_.mergedParentTicket}
+	$completedNotClosedTicketsCount = ($completedNotClosedTickets | Measure-Object).Count
+	Write-Verbose "Found $($completedNotClosedTicketsCount) completed but not closed tickets"
+
+	# total service time entries falling inside the period
+	Write-Verbose 'Getting list of current service time entries'
+	$timeEntriesSTs = Get-CWMObject -Verbose:$False -Endpoint 'time/entries' -Conditions ('chargeToType = "ServiceTicket" AND dateEntered >= [{0:yyyy-MM-dd}T00:00:00Z] AND dateEntered <= [{1:yyyy-MM-dd}T23:59:59Z]' -f $periodStart, $periodEnd) | Select-Object chargeToId, actualHours
+
+	# total project time entries falling inside the period
+	Write-Verbose 'Getting list of current project time entries'
+	$timeEntriesPTs = Get-CWMObject -Verbose:$False -Endpoint 'time/entries' -Conditions ('chargeToType = "ProjectTicket" AND dateEntered >= [{0:yyyy-MM-dd}T00:00:00Z] AND dateEntered <= [{1:yyyy-MM-dd}T23:59:59Z]' -f $periodStart, $periodEnd) | Select-Object chargeToId, actualHours
+
+	# total admin time entries falling inside the period
+	Write-Verbose 'Getting list of current admin time entries'
+	$timeEntriesAdm = Get-CWMObject -Verbose:$False -Endpoint 'time/entries' -Conditions ('chargeToType = "ChargeCode" AND dateEntered >= [{0:yyyy-MM-dd}T00:00:00Z] AND dateEntered <= [{1:yyyy-MM-dd}T23:59:59Z]' -f $periodStart, $periodEnd) | Select-Object chargeToId, actualHours
+
+	# total time spent on reactive tickets
+	$reactiveHours = ($timeEntriesSTs | Where-Object {($_.chargeToId -in ((Compare-Object $timeEntriesSTs.chargeToId -DifferenceObject $reactiveTicketsCreated.id -IncludeEqual -ExcludeDifferent).InputObject)) -or ($_.chargeToId -in ((Compare-Object $timeEntriesSTs.chargeToId -DifferenceObject $reactiveTicketsClosed.id -IncludeEqual -ExcludeDifferent).InputObject))} | Measure-Object -Property actualHours -Sum).Sum
+
+	# other hours
+	$serviceHours = ($timeEntriesSTs | Measure-Object -Property actualHours -Sum).Sum
+	$projectHours = ($timeEntriesPTs | Measure-Object -Property actualHours -Sum).Sum
+	$adminHours = ($timeEntriesAdm | Measure-Object -Property actualHours -Sum).Sum
+	$proactiveHours = $serviceHours - $reactiveHours
+
+	# total time (over full ticket life) on closed reactive tickets
+	Write-Verbose 'Getting total time on closed reactive tickets'
+	$cnt = 0
+	$maxcnt = $reactiveTicketsClosedCount
+	$closedHours = 0
+	$reactiveTicketsClosed | Select-Object id -PipelineVariable ticket | Foreach-Object {
+		$cnt++; if ($maxcnt) { Write-Progress -activity 'Reading Time Entries' -CurrentOperation "$($ticket.id) / $($closedHours)" -PercentComplete (($cnt / $maxcnt) * 100) }
+		$closedHours += (Get-CWMObject -Verbose:$False -Endpoint 'time/entries' -Conditions ('chargeToType = "ServiceTicket" AND chargeToId={0}' -f $ticket.id) | Select-Object actualHours | Measure-Object -Property actualHours -Sum).Sum
+	}
+
+	# Project - actual vs budget hours
+	Write-Verbose 'Getting project budget vs actual hours'
+	$projects = Get-CWMObject -Verbose:$False -Endpoint 'project/projects' -Conditions 'status/name != "Closed" AND board/name = "Projects"' | Select-Object actualHours, budgetHours
+	$projectBudgetHours = ($projects | Where-Object {$_.budgetHours -gt 0} | Measure-Object -Property budgetHours -Sum).Sum
+	$projectActualHours = ($projects | Where-Object {$_.actualhours -gt 0} | Measure-Object -Property actualHours -Sum).Sum
+
+	# Sales pipeline - Opportunities
+	Write-Verbose 'Getting opportunities'
+	$opportunities = Get-CWMObject -Verbose:$False -Endpoint 'sales/opportunities' -Conditions 'status/name = "Open"'
+
+	Write-Verbose 'Getting product revenue'
+	$productDirectRevenue = ($opportunities | Select-Object id -PipelineVariable opp | ForEach-Object {
+		Get-CWMObject -Verbose:$False -Endpoint 'procurement/products' -Conditions ('opportunity/id = {0}' -f $opp.id)
+	} | Select-Object @{n='total';e={$_.quantity * $_.price}} | Measure-Object -Property total -Sum).Sum
+
+	$productServiceRevenue = ($opportunities | Select-Object id -PipelineVariable opp | ForEach-Object {
+		Get-CWMObject -Verbose:$False -Endpoint ('/sales/opportunities/{0}/forecast' -f $opp.id) -Fields 'productRevenue' | Select-Object -ExpandProperty productRevenue
+	} | Measure-Object -Property revenue -Sum).Sum
+
+	$productRevenue = $productDirectRevenue + $productServiceRevenue
+
+	Write-Verbose 'Getting service revenue'
+	$serviceRevenue = ($opportunities | Select-Object id -PipelineVariable opp | ForEach-Object {
+		Get-CWMObject -Verbose:$False -Endpoint ('/sales/opportunities/{0}/forecast' -f $opp.id) -Fields 'serviceRevenue' | Select-Object -ExpandProperty serviceRevenue
+	} | Measure-Object -Property revenue -Sum).Sum
+
+	Write-Verbose 'Getting recurring revenue'
+	$recurringRevenue = ($opportunities | Select-Object id -PipelineVariable opp | ForEach-Object {
+		Get-CWMObject -Verbose:$False -Endpoint ('/sales/opportunities/{0}/forecast' -f $opp.id) -Fields 'forecastItems' | Where-Object forecastItems
+	} | Select-Object -ExpandProperty forecastItems | Where-Object {$_.recurringFlag -eq $True} | Select-Object recurringRevenue,cycles, @{n='total';e={$_.recurringRevenue * $_.cycles}} | Measure-Object -Property total -Sum).Sum
+
+	# Sales pipeline - project hours
+	Write-Verbose 'Getting project service hours'
+	$marginOnProjectHours = 150 - 0; # Billing rate - Pay rate (was 50)
+	$salesProjectHours = $serviceRevenue / $marginOnProjectHours
+#	Get-CWMObject -Verbose:$False '/sales/opportunities' -Conditions 'status/name LIKE "%open%"' | Foreach-Object {
+#		Get-CWMObject -Verbose:$False "/sales/opportunities/$($_.id)/forecast" -Conditions 'status/name = "Open"' | Select-Object -PipelineVariable Forecast | Foreach-Object { $salesProjectHours += ($Forecast.margin / $marginOnProjectHours) }
+#	}
+
+	[PSCustomObject]@{
+		periodStart = $periodStart;
+		periodEnd = $periodEnd;
+		recurringRevenue = $recurringRevenue;
+		salesProjectHours = $salesProjectHours;
+		usersManaged = $usersManaged;
+		adminHours = $adminHours;
+		projectBudgetHours = $projectBudgetHours;
+		projectActualHours = $projectActualHours;
+		reactiveTicketsCreatedCount = $reactiveTicketsCreatedCount;
+		reactiveTicketsClosedCount = $reactiveTicketsClosedCount;
+		completedNotClosedTicketsCount = $completedNotClosedTicketsCount;
+		reactiveHours = $reactiveHours;
+		closedHours = $closedHours;
+		endpointsManagedServer = $endpointsManagedServer;
+		endpointsManagedWorkstation = $endpointsManagedWorkstation;
+		endpointsUnManagedServer = $endpointsUnManagedServer;
+		endpointsUnManagedWorkstation = $endpointsUnManagedWorkstation;
+		productRevenue = $productRevenue;
+		serviceRevenue = $serviceRevenue;
+		proactiveHours = $proactiveHours;
+		projectHours = $projectHours;
+	}
+}
+
+<#
+OTHER BILLING INTEGRATIONS:
+
+anchor
+%1: Product count
+
+efolder
+%1: Product count (always 1 for BDR, overage amount when bigger than BDR limit)
+%2: For all products, the account name / hostname of the target
+%3: For BDR, size of the BDR repository (overage reported as separate line item)
+
+opendns
+%1: Product count
+
+sophos
+%1: Product count
+#>
+
+Function Get-CWMInvoiceDeltas {
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory)]
+		[ValidateScript({
+			try{[datetime]::Parse($psitem)}catch{throw "Datetime is in the wrong format ($_) Use this format 1/31/2019"}
+		})]
+		[string]$InvoiceDate,
+		[int]$MinDelta = 0
+	)
+	
+	[datetime]$currentDate = $InvoiceDate
+	
+	Get-CWMObject -Endpoint '/finance/invoices' -Conditions ('applyToType = "Agreement" AND (date = [{0:yyyy-MM-ddT00:00:00Z}] OR date = [{1:yyyy-MM-ddT00:00:00Z}])' -f ([datetime]$currentDate), ([datetime]$currentDate).AddMonths(-1)) -Fields 'id,invoiceNumber,accountNumber,date,applyToId,total' | `
+		Sort-Object accountNumber,applyToId,date | `
+		Group-Object accountNumber,applyToId | `
+		Where-Object {$_.Count -eq 2} | `
+		Foreach-Object {
+			$tuple = $_.Group
+			$pastInvoice = $tuple[0]
+			$currentInvoice = $tuple[1]
+			$pastTotal = $pastInvoice.total
+			$currentTotal = $currentInvoice.total
+
+			if ([Math]::Abs($currentTotal - $pastTotal) -gt $MinDelta) {
+				$pastProds = Get-CWMObject -Endpoint '/procurement/products' -Conditions ('invoice/id = {0}' -f $pastInvoice.id) -Fields 'id,catalogItem/identifier,quantity'
+				$currentProds = Get-CWMObject -Endpoint '/procurement/products' -Conditions ('invoice/id = {0}' -f $currentInvoice.id) -Fields 'id,catalogItem/identifier,quantity'
+
+				if ($pastProds.Count -and $currentProds.Count) {
+					$diff = Compare-Object -ReferenceObject $pastProds -DifferenceObject $currentProds -Property catalogItem,quantity
+
+					if ($diff.Count) {
+						$company = $pastInvoice.accountNumber
+						$pastInvoiceNumber = $pastInvoice.invoiceNumber
+						$currentInvoiceNumber = $currentInvoice.invoiceNumber
+						$diff | Sort-Object {$_.catalogItem.identifier},SideIndicator | Group-Object {$_.catalogItem.identifier} | Foreach-Object {
+							$item = $_.Name
+							$before = ($_.Group | Where-Object {$_.SideIndicator -eq '<='} | Select-Object -ExpandProperty quantity) -join ', '
+							$after = ($_.Group | Where-Object {$_.SideIndicator -eq '=>'} | Select-Object -ExpandProperty quantity) -join ', '
+							[PSCustomObject]@{
+								Company = $company
+								PastInvoiceNumber = $pastInvoiceNumber
+								CurrentInvoiceNumber = $currentInvoiceNumber
+								PastTotal = $pastTotal
+								CurrentTotal = $currentTotal
+								DeltaTotal = ($currentTotal - $pastTotal)
+								Item = $item
+								QuantityBefore = $before
+								QuantityAfter = $after
+							}
+						}
+					}
+
+				}
+
+			}
+
+		}
+}
+
+Function Submit-CWMTimeSheet {
+	<#
+	.SYNOPSIS
+
+	Submits one or more time sheet for approval
+
+	.DESCRIPTION
+
+	This cmdlet will submit a member time sheet for approval. Approval can be done via "My Approval" in CW for people who can approve time sheets
+
+	.PARAMETER ID
+
+	Either the ID of the TimeSheet or an object representing the TimeSheet with an ID property.
+
+	.EXAMPLE
+
+	Submit-CWMTimeSheet -ID 123456
+
+	Will submit Time Sheet referenced by ID 123456
+
+	#>
+	[CmdletBinding()]
+	Param (
+		[Parameter(Mandatory,ValueFromPipeline)]
+		[Object]$ID,
+		[switch]$PassThru
+	)
+
+	Begin {
+		if(-Not (Start-CWMConnection)) {
+			return $null
+		}
+		$returnobject = @()
+
+	}
+
+	Process {
+
+		# Determine whether we were passed an ID or an entire Ticket object (with an ID property)
+		if ($id.id) {
+			$timeSheetID = $id.id
+		} else {
+			$timeSheetID = $id
+		}
+
+		if ((0 + $timeSheetID) -gt 0) {
+
+			Add-Type -AssemblyName System.Web
+			$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty)
+			$Request = [System.UriBuilder]($script:cwmURL + ('/time/sheets/{0}/submit' -f (0 + $timeSheetID)))
+			$Request.Query = $Parameters.ToString()
+
+			$result = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Post -Headers $script:header -ContentType "application/json"
+
+			if($result) {
+				$returnobject += $result
+			}
+
+		} else {
+
+			Write-Error "timeSheetID can't be zero"
+			return $null
+
+		}
+	}
+
+	End {
+		# Pass the object(s) down to the pipeline if we are chaining calls
+		if ($PassThru) {
+			return $returnobject
+		} else {
+			return $null
+		}
+	}
+}
+
+Function Get-CWMOpenProjectTickets {
+	<#
+	.SYNOPSIS
+
+	Returns a list of ProjectTickets from all active Projects
+
+	.DESCRIPTION
+
+	This cmdlet will return an array of ProjectTicket objects from all Projects that are active.
+	Active projects are those
+		- on the Projects Board (or whatever ProjectBoardPattern matches)
+		- not closed
+		- not completed
+		- not on-hold
+
+	#>
+	[CmdletBinding()]
+	Param (
+		[Object]$ProjectBoardPattern = 'Projects'
+	)
+
+	$projIDs = Get-CWMObject 'project/projects' -Conditions ('closedFlag = False AND board/name LIKE "{0}" AND status/name != "60. Completed" AND status/name != "55. On-hold"' -f $ProjectBoardPattern) -PageSize 1000 -Fields 'id' | Select-Object -ExpandProperty id
+	$projIDCondition = ($projIDs -replace "(.*)", '"$1') -join ','
+
+	if ($projIDCondition) {
+		Get-CWMObject 'project/tickets' -Conditions ('project/id IN ({0})' -f $projIDCondition) -PageSize 1000
+	}
+}
+
+Function Get-CWMProjectDescription {
+	<#
+	.SYNOPSIS
+
+	Returns all active Project Descriptions
+
+	.DESCRIPTION
+
+	This cmdlet will return the description for all active projects.
+
+	#>
+	[CmdletBinding()]
+	Param ()
+
+	Get-CWMObject 'project/projects' -Conditions 'closedFlag = False AND board/name LIKE "Projects*" AND status/name <> "On-Hold" AND status/name <> "Completed"' -PageSize 1000 -Fields 'id,name,actualHours,budgetHours,status,company,description' | `
+		Sort-Object {$_.company.name},{$_.name} | `
+		Select-Object @{n='Company';e={$_.company.name}},Name,@{n='Status';e={$_.status.name}},budgetHours,actualHours,description
+}
+
+Function Get-CWMCompletedServiceTicketsHistory {
+	$sts = Get-CWMObject '/service/tickets' -Conditions 'status/name = "Completed"' -PageSize 1000 | Where-Object {$null -eq $_.mergedParentTicket} | Sort-Object id
+	foreach ($st in $sts) {
+		Write-Host "===============================================================================" -ForegroundColor Yellow
+		Write-Host "ID:" -NoNewline -ForegroundColor Green
+		Write-Host $st.id $st.summary -
+		Write-Host "Company:" -NoNewline -ForegroundColor Green
+		Write-Host $st.company.name
+		Write-Host "Notes:" -ForegroundColor Green
+		$notes = Get-CWMObject -Endpoint "/service/tickets/$($st.id)/allNotes" | Sort-Object {$_._info.dateEntered}
+		foreach ($note in $notes) {
+			Write-Host "`tDate:" -NoNewline -ForegroundColor Green
+			Write-Host $note._info.dateEntered ", Member:" $note.member.name
+			Write-Host "`tNote:"-ForegroundColor Green
+			Write-host $note.text
+			Write-Host ""
+		}
+		Write-Host ""
+	}
+}
+
+Function Get-UsNumber($number) {
+    try {
+        '({0}) {1}-{2}' -f $number.Substring(0,3),$number.Substring(3,3),$number.Substring(6,4)
+    } catch {
+        $number
+    }
+}
+
+Function Get-CWMContactDetails {
+	<#
+	.SYNOPSIS
+
+	Returns all active Contacts with their communication details and contact types organized as properties.
+
+	.DESCRIPTION
+
+	This cmdlet will return all active Contacts from all active Companies. For each Contact it will provide:
+	- Company
+	- CompanyType: the Company type (Customer A, B, ...)
+	- FirstName
+	- LastName
+	- Default: What is the default phone for this Contact
+	- Direct: What is the direct phone for this Contact, if any
+	- Cell: What is the cell phone for this Contact, if any
+	- Home: What is the home phone for this Contact, if any
+	- DefaultComm: What method is set as the default for this Contact
+	- <one column per generic Contact Type>, with a "x" to indicate this Contact has this type
+	- User-<one column per User Contact Type, used for MSP classifications>, with a "x" to indicate this Contact has this type
+	- hasUserType: True or False whether this Contact has any User-* Contact Type set (if not this user will not be counted toward MSP user counts)
+
+	.EXAMPLE
+
+	Get-CWMContactDetails | Where-Object {$_.CompanyType -like '* A*' -and $_.hasUserType -eq $false} | Export-Excel
+
+	This command would export to Excel the list of "A" client contacts who do not have a user type set
+
+	#>
+	[CmdletBinding()]
+	Param ()
+
+	$clients = Get-CWMObject '/company/companies' -Conditions 'status/name LIKE "Active"' -PageSize 1000 -Fields 'id,name,types' | Where-Object {($_.types | Where-Object name -like 'Customer - *')}
+	$contacts = Get-CWMObject '/company/contacts' -Conditions 'inactiveFlag = False' -PageSize 1000 -Fields 'id,company,firstName,lastName,defaultPhoneNbr,types,communicationItems'
+	$typeProps = $contacts.types.name | Sort-Object -Unique
+	$contacts | Where-Object {$_.company.name -in ($clients.name)} | ForEach-Object {
+		$ct = $_
+		$cl = $clients | Where-Object {$ct.company.name -eq $_.name}
+		# Create the base contact object
+		$contact = [PSCustomObject]@{
+			Company = $cl.name
+			CompanyType = ($cl.types | Select-Object -ExpandProperty name | Sort-Object) -join ','
+			FirstName = $ct.FirstName
+			LastName = $ct.LastName
+			Default = Get-UsNumber $_.defaultPhoneNbr
+			Direct = ''
+			Cell = ''
+			Home = ''
+			DefaultComm = $ct.defaultPhoneType
+		}
+		# Add the contact types as properties (columns)
+		$typeProps | ForEach-Object {
+			$prop = $_
+			if ($ct.types | Where-Object Name -eq $prop) {
+				$contact | Add-Member -MemberType NoteProperty -Name $prop -Value 'x'
+			} else {
+				$contact | Add-Member -MemberType NoteProperty -Name $prop -Value ''
+			}
+		}
+		# Add a flag for contacts who do not have any User-* type
+		$contact | Add-Member -MemberType NoteProperty -Name hasUserType -Value ((($ct.types | Where-Object Name -like 'User-*' | Select-Object -ExpandProperty name | Sort-Object) -join '') -ne '')
+		# Add the communication methods as properties (columns)
+		$ct.communicationItems | Where-Object communicationType -eq 'Phone' | ForEach-Object {
+			$type = if ($_.type.name) {$_.type.name} else {'Other'}
+			$contact.$type = Get-UsNumber $_.value
+			$contact.DefaultComm = $type
+			if ($_.defaultFlag) {$contact.DefaultComm = $type}
+		}
+		$contact
+	} | Sort-Object Company, FirstName, LastName
+
+}
+
+
+Function Get-CWMCompletedTicketsForReview {
+	<#
+	.SYNOPSIS
+
+	Returns all completed tickets along with their time entries.
+
+	.DESCRIPTION
+
+	This cmdLet is used to xport a list of all completed tickets, along with all the time entries for those tickets.
+	This is used during ticket review for closing, to make sure no last minute adjustment have to be made.
+
+	.EXAMPLE
+
+	Get-CWMCompletedTicketsForReview | ConvertTo-JSON -Depth 5 | Out-Notepad
+
+	#>
+	[CmdletBinding()]
+	Param ()
+
+	# Get all Completed tickets
+	$completedTickets = Get-CWMObject -Endpoint 'service/tickets' -Conditions 'status/name = "Completed"' -Fields 'id,company,summary,type,subType,item,actualHours,_info' | `
+						Select-Object   id, `
+										@{n='Company';e={$_.company.Identifier}}, `
+										summary, `
+										@{n='Type';e={$_.type.name}}, `
+										@{n='SubType';e={$_.subtype.name}}, `
+										@{n='Item';e={$_.item.name}}, `
+										actualHours, `
+										'_info' | `
+						Sort-Object Company,id
+
+	# Compute the earliest possible related time entry date
+	$minDate = (($completedTickets | Select-Object @{n='DateEntered';e={[datetime]($_.'_info'.dateEntered)}} | Measure-Object DateEntered -Minimum).Minimum).AddDays(-1).ToString('MM/dd/yyyy')
+
+	# Compute the latest possible related time entry date
+	$maxDate = (($completedTickets | Select-Object @{n='LastUpdated';e={[datetime]($_.'_info'.lastUpdated)}} | Measure-Object LastUpdated -Maximum).Maximum).AddDays(1).ToString('MM/dd/yyyy')
+
+	# Get all related time entries
+	$timeEntries = Get-CWMTimeEntry -TimeStart $minDate -TimeEnd $maxDate | `
+			Select-Object   ChargeToID, `
+							@{n='Member';e={$_.member.name}}, `
+							@{n='TimeStart';e={[datetime]($_.timeStart)}}, `
+							@{n='TimeEnd';e={[datetime]($_.timeEnd)}}, `
+							@{n='WorkRole';e={$_.workRole.name}}, `
+							@{n='WorkType';e={$_.workType.name}}, `
+							@{n='Hours';e={$_.actualHours}}, `
+							Notes | `
+			Sort-Object Company,ChargeToType,ChargeToID,TimeStart,Member | Where-Object chargeToID -in ($completedTickets).id
+	
+	# Incorporate the time entries into their corresponding ticket
+	$completedTickets | ForEach-Object {
+		$ticket = $_
+		Add-Member -InputObject $ticket -MemberType NoteProperty 'TimeEntries' -Value ($timeEntries | Where-Object ChargeToID -eq $ticket.id | Select-Object Member,@{n='TimeStart';e={[string]$_.TimeStart}},@{n='TimeEnd';e={[string]$_.TimeEnd}},WorkRole,WorkType,Hours,Notes)
+	}
+
+	$completedTickets | Select-Object * -ExcludeProperty '_info'
+
+}
+
+<#
+$activeSTs = Get-CWMObject -Endpoint '/service/tickets' -Conditions 'closedFlag = False AND board/name LIKE "Service*"' -Fields 'id,parentTicketId,item' -PageSize 1000 | Where-Object {($null -eq $_.parentTicketId) -and ($_.item)}
+
+$activeSTs | ForEach-Object {
+    $Notes = Get-CWMObject -Endpoint '/service/tickets/1041365/notes'
+}
+#>
+
+Function Get-CWMDuplicateConfigurations {
+	<#
+	.SYNOPSIS
+
+	Returns all Configurations that have a duplicate MAC address.
+
+	.DESCRIPTION
+
+	This cmdLet will find all Active Configurations with the same MAC address (except Hyper-V vSwitch generated MACs) and report the configurations salient details.
+	An operator can then use that to decide which Configuration should be set to Inactive.
+	It is a good idea to sync CWM with IT Glue after this.
+
+	.EXAMPLE
+
+	Get-CWMDuplicateConfigurations | Export-Excel
+
+	#>
+	[CmdletBinding()]
+	Param ()
+
+	# Get all Active CW Configurations of type Managed% which have duplicates
+	$configs = Get-CWMObject -Endpoint company/configurations -Conditions 'type/name LIKE "Managed %" AND status/name LIKE "Active"' -Verbose:$false
+	$dupgroups = $configs | Group-Object -Property macAddress | Where-Object { $_.count -ge 2 }
+	$dups = $dupgroups | Foreach-Object { $_.Group }
+
+	$dups | Select-Object `
+				@{Name='Company';Expression={$_.company.name}}, `
+				@{Name='Name';Expression={$_.name}}, `
+				@{Name='DeviceID';Expression={$_.deviceIdentifier}}, `
+				@{Name='ID';Expression={$_.id}}, `
+				@{Name='MACAddress';Expression={$_.macAddress}}, `
+				@{Name='ConfigType';Expression={$_.type.name}}, `
+				@{Name='DateEntered';Expression={[datetime]($_._info.dateEntered)}}
+
+}
+
+Function Set-CWMProjectResources {
+	<#
+	.SYNOPSIS
+
+	Sets the resources across all project tickets for all opened projects
+
+	.DESCRIPTION
+
+	This cmdlet will allow the user to visualize all project tickets for all open projects, and, for each ticket:
+	   see who has put time but is not assigned
+	   set or remove resources,
+	   set or clear the client, resource and CC notifications,
+	   set or clear the CC list
+	
+	This cmdlet generates a CSV file on the file, which must be edited to make changes. Typically, if CSV files are associated with Excel, this will launch Excel to all easy bulk manipulations.
+
+	Once the CSV file is open, the cmdlet pauses. To resume, save the changes to the CSV file then press <ENTER> at the cmdlet prompt.
+
+	The cmdlet outputs one line per change made.
+
+	.EXAMPLE
+
+	Set-CWMProjectResources
+
+	#>
+	[CmdletBinding()]
+	Param ()
+
+	# Temporary file to allow the operator to make changes in bulk in Excel
+	$projectResourcesFile = "$ENV:TEMP\projectResourcesFile.csv"
+	Remove-Item -Force $projectResourcesFile -ErrorAction SilentlyContinue
+
+
+	# Get all active CW members
+	$members = Get-CWMObject -Endpoint 'system/members' -Conditions 'inactiveFlag = False AND (licenseClass = "F" OR licenseClass = "X")' -Fields 'identifier' -OrderBy 'identifier' | Select-Object -ExpandProperty identifier
+	$membersEmail = Get-CWMObject -Endpoint 'system/members' -Conditions 'inactiveFlag = False AND (licenseClass = "F" OR licenseClass = "X")' -Fields 'officeEmail' -OrderBy 'officeEmail' | Select-Object -ExpandProperty officeEmail
+
+	# Get all open project tickets that are not completed/closed
+	$openProjectTickets = Get-CWMOpenProjectTickets | Where-Object {($_.Status.name -ne 'Completed' -and $_.Status.name -ne 'Closed')} | `
+		Sort-Object {$_.company.name},{$_.project.name},{$_.wbscode} | `
+		Select-Object `
+			@{n='Company';e={$_.company.name}}, `
+			@{n='Project';e={$_.project.name}}, `
+			@{n='Phase';e={$_.phase.name}}, `
+			id, `
+			@{n='Summary';e={$_.summary}}, `
+			@{n='Status';e={$_.status.name}}, `
+			@{n='Budget';e={$_.budgetHours}}, `
+			@{n='Actual';e={$_.actualHours}}, `
+			@{n='StartDate';e={([DateTime]::Parse($_.estimatedStartDate)).ToString('M/d/yyyy')}}, `
+			@{n='EndDate';e={([DateTime]::Parse($_.requiredDate)).ToString('M/d/yyyy')}}, `
+			@{n='EmailContact';e={if($_.automaticEmailContactFlag) {'X'}}}, `
+			@{n='EmailResource';e={if($_.automaticEmailResourceFlag) {'X'}}}, `
+			@{n='EmailCC';e={if($_.automaticEmailCcFlag) {'X'}}}, `
+			@{n='EmailCCRecipient';e={$_.automaticEmailCc}}
+
+	$openProjectTickets | Foreach-Object {
+		$mbr = $_
+		$members | Foreach-Object {
+			Add-Member -InputObject $mbr -MemberType NoteProperty -Name $_ -Value $null
+		}
+	}
+
+	# Extract the ticket IDs in batches
+	$ticketIDs = $openProjectTickets | Select-Object -ExpandProperty id
+	$batchSize = 50
+	$ticketIndex = 0
+	$resources = @()
+	$timeEntries = @()
+	do {
+		# Get all assigned (not done) resources and time entries for all those tickets
+		$ticketIDCondition = ($ticketIDs[($ticketIndex)..($ticketIndex+$batchSize-1)] -replace "(.*)", '"$1') -join ','
+		$resources += Get-CWMObject -Endpoint '/schedule/entries' -Conditions ('objectId IN ({0}) AND doneflag = False' -f $ticketIDCondition) -PageSize 1000
+		$timeEntries += Get-CWMObject -Endpoint '/time/entries' -Conditions ('chargeToId IN ({0})' -f $ticketIDCondition) -PageSize 1000
+		$ticketIndex += $batchSize
+	} while ($ticketIndex -lt $ticketIDs.Count)
+
+
+	# Mark resources for each ticket, 'T' means the resource has entered time and 'X' means the resource is currently assigned
+	$openProjectTickets | ForEach-Object {
+		$ticket = $_
+		$timeEntries | Where-Object chargeToId -eq $ticket.id | Select-Object -ExpandProperty member | Select-Object -ExpandProperty identifier -Unique | ForEach-Object {
+			$name = $_
+			if([bool]($ticket.PSobject.Properties.name -match $name)) {
+				$ticket.$name = 'T'
+			}
+		}
+		$resources | Where-Object objectId -eq $ticket.id | Select-Object -ExpandProperty member | Select-Object -ExpandProperty identifier -Unique | ForEach-Object {
+			$name = $_
+			if([bool]($ticket.PSobject.Properties.name -match $name)) {
+				$ticket.$name = 'X'
+			}
+		}
+	}
+
+	# Export to a CSV for the operator to make changes
+	$openProjectTickets | Export-Csv -NoTypeInformation -Path $projectResourcesFile
+	Start-Process $projectResourcesFile
+	Read-Host "Mark X for new resource assignments and notification flags and enter CCs, then save and close the file and press <ENTER> here to continue" | Out-Null
+	$newProjectTickets = Import-Csv $projectResourcesFile
+
+	# Only keep the old tickets that correspond to the new tickets
+	$toKeepIDs = Compare-Object -ReferenceObject $openProjectTickets -DifferenceObject $newProjectTickets -Property id -IncludeEqual | Where-Object SideIndicator -eq '=='
+
+	# Filter the tickets to the common subset (allows the operator to remove tickets/projects to focus on what they need to change)
+	$openProjectTickets = $openProjectTickets | Where-Object id -in $toKeepIDs.id
+	$newProjectTickets = $newProjectTickets | Where-Object id -in $toKeepIDs.id
+
+	# Process changes in resource assignments
+	$members | Foreach-Object {
+		$prop = $_
+		Compare-Object -ReferenceObject $openProjectTickets -DifferenceObject $newProjectTickets -Property id,$prop | Where-Object $prop -eq 'X' | ForEach-Object {
+			$mod = $_
+			if ($mod.SideIndicator -eq '=>') {
+				Write-Warning "Adding $prop to $($mod.id)"
+				Add-CWMTicketResource -ID $mod.id -Member $prop
+			} else {
+				Write-Warning "Removing $prop from $($mod.id)"
+				Set-CWMTicketResourceDone -ID $mod.id -Member $prop
+			}
+		}
+	}
+
+	# Process changes in communication flags
+	('EmailContact', 'EmailResource', 'EmailCC') | Foreach-Object {
+		$prop = $_
+		$mods = Compare-Object -ReferenceObject $openProjectTickets -DifferenceObject $newProjectTickets -Property id,$prop | Where-Object {[string]($_.$prop) -eq 'X'}
+		if ($mods) {
+			$mods | ForEach-Object {
+				$mod = $_
+				if ($mod.SideIndicator -eq '=>') {
+					$splat = @{
+						id = $mod.id
+						$prop = $True
+					}
+					Write-Warning "Setting $prop to True for $($mod.id)"
+					Set-CWMProjectTicketNotifications @splat
+				} elseif ($mod.SideIndicator -eq '<=') {
+					$splat = @{
+						id = $mod.id
+						$prop = $False
+					}
+					Write-Warning "Setting $prop to False for $($mod.id)"
+					Set-CWMProjectTicketNotifications @splat
+				}
+			}
+		}
+	}
+
+	# Process changes in CC settings
+	$prop = 'EmailCCRecipient'
+	$mods = Compare-Object -ReferenceObject $openProjectTickets -DifferenceObject $newProjectTickets -Property id,$prop | Where-Object {[string]($_.$prop) -ne ''}
+	if ($mods) {
+		$mods | ForEach-Object {
+			$mod = $_
+			# Convert the special keyword 'all' to the list of all of us
+			if ($mod.prop -eq 'all') {
+				$mod.prop = $membersEmail -join ','
+			}
+			$splat = @{
+				id = $mod.id
+				$prop = [string]($mod.$prop)
+				EmailCC = ([string]($mod.$prop) -ne '')   # We need to add that parameter otherwise the cmdlet will complain
+			}
+			Write-Warning "Setting $prop to $($mod.$prop) for $($mod.id)"
+			Set-CWMProjectTicketNotifications @splat
+		}
+	}
+
+}
+
+Function Update-CWMAllProjectTeams {
+	<#
+	.SYNOPSIS
+
+	All all missing members to all current active projects
+
+	.DESCRIPTION
+
+	This cmdLet will find all Active Projects and for each will add all missing current active CWM members.
+
+	.EXAMPLE
+
+	Update-CWMAllProjectTeams
+
+	#>
+	[CmdletBinding()]
+	Param ()
+
+	$allmembers = Get-CWMObject -Endpoint 'system/members' -Conditions 'inactiveFlag = False AND (licenseClass = "F" OR licenseClass = "X")' -Fields 'identifier' -OrderBy 'identifier' | Select-Object -ExpandProperty identifier
+
+	Get-CWMObject 'project/projects' -Conditions 'closedFlag = False' -Fields 'id,name' | Select-Object -PipelineVariable prj | ForEach-Object {
+		$existingTeam = Get-CWMObject ('/project/projects/{0}/teamMembers' -f $prj.id) -Fields 'member/identifier' | Select-Object -ExpandProperty member | Select-Object -ExpandProperty identifier
+		Compare-Object -ReferenceObject $allmembers -DifferenceObject $existingTeam | Where-Object SideIndicator -eq '<=' | Foreach-Object {
+			$addition = [PSObject]@{
+				projectId = $prj.id
+				member = @{ identifier = $_.inputObject }
+				projectRole = @{ id = 2 }	# Team Member
+				workRole = @{ id = 24 }		# Projects
+			}
+			Write-Host "Adding '$($_.inputObject)' to project '$($prj.name)'"
+			Add-CWMObject ('/project/projects/{0}/teamMembers' -f $prj.id) -Data $addition | Out-Null
+		}
+	}
+	
+}
