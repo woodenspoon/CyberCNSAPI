@@ -17,7 +17,7 @@ The API Endpoint to call, see LINK section in HELP.
 
 .PARAMETER Conditions
 
-Any condition to restrict the records returned, see LINK section in HELP.
+Any condition to restrict the records returned, in ElasticSearch format, see LINK section in HELP.
 
 .PARAMETER Fields
 
@@ -33,7 +33,7 @@ Show a progress indicator for long running queries
 
 .LINK
 
-https://portaluswest2.mycybercns.com/docs#/
+https://cybercns.atlassian.net/wiki/spaces/Verison2/pages/1755676675/CyberCNS+API+Documentation
 
 .EXAMPLE
 
@@ -41,7 +41,7 @@ Get-CCNSObject -Endpoint 'company/'
 
 .EXAMPLE
 
-Get-CWMObject -Endpoint 'company/' -Conditions 'name LIKE "ABC%"'
+Get-CCNSObject -Endpoint 'company/' -Conditions '{"query": {"bool":{"must": [{"exists": {"field": "description"}}], "must_not": [{"exists": {"field": "companyRef"}}]}}}'
 
 #>
 Function Get-CCNSObject {
@@ -54,7 +54,7 @@ Function Get-CCNSObject {
 
 		[string]$Fields,
 
-		[int]$PageSize,
+		[int]$PageSize = 100,
 
 		[switch]$ShowProgress
 	)
