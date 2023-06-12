@@ -38,6 +38,6 @@ Function Set-CCNSConnection {
     }
 
     Write-Verbose "Saving new parameters."
-    $Settings | Set-WSTBlobData -Module CyberCNSAPI -Name Settings
+    $Settings | Set-CCNSSettings
 
 }

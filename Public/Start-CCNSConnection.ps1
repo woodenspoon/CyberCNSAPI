@@ -35,7 +35,7 @@ Function Start-CCNSConnection {
     $script:ccnsBasicAuth = $null
 
     # Read the settings from the blob
-    $Settings = Get-WSTBlobData -Module CyberCNSAPI -Name Settings
+    $Settings = Get-CCNSSettings
     if (-Not ($Settings)) {
         Write-Error "Unable to read settings from WSTBlobData 'CyberCNSAPI/Settings'"
         return $false
