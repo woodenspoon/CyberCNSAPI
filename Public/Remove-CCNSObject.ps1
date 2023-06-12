@@ -1,25 +1,21 @@
 <#
 .SYNOPSIS
 
-Performs a PUT on an API endpoint, updating an entire object.
+Performs a DELETE on an API endpoint, deleting an entire object.
 
 .DESCRIPTION
 
-This function will call the CyberCNS API at a specified end point and perform a PUT operation.
+This function will call the CyberCNS API at a specified end point with a unique ID and perform a DELETE operation.
 
-The object can be passed as either an object or in JSON format. It is best to GET the object first, change the desired properties and PUT it back.
+The object to be deleted has to be passed as parameter by its ID.
 
 .PARAMETER Endpoint
 
 The API Endpoint to call, see LINK section in HELP.
 
-.PARAMETER Object
+.PARAMETER ID
 
-The object properties to update, either as an object or a string in JSON format.
-
-.PARAMETER JSON
-
-Interpret the object as a JSON string.
+The ID of the object to delete.
 
 .LINK
 
@@ -27,19 +23,17 @@ https://cybercns.atlassian.net/wiki/spaces/Verison2/pages/1755676675/CyberCNS+AP
 
 .EXAMPLE
 
-Update-CCNSObject -Endpoint 'company' -Object $json
+Delete-CCNSObject -Endpoint 'assetcredentials' -ID 'XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX'
 
 #>
-Function Update-CCNSObject {
+Function Remove-CCNSObject {
 	[CmdletBinding()]
 	Param (
 		[Parameter(Mandatory)]
 		[string]$Endpoint,
 
-        [Parameter(ValueFromPipeline,Mandatory)]
-        [object]$Object,
-
-        [switch]$JSON
+		[Parameter(Mandatory)]
+        [object]$ID
 	)
 
 	# Initialize the connection if it has expired (or is not active yet)
@@ -47,17 +41,10 @@ Function Update-CCNSObject {
 		return $null
 	}
 
-    # Determine if the object needs to be converted to a JSON string
-    if ($JSON) {
-        $obj = $Object
-    } else {
-        $obj = $Object | ConvertTo-Json
-    }
-
     # Run the EndPoint
-	Write-Verbose "Executing PUT on endpoint '$EndPoint'"
+	Write-Verbose "Executing DELETE on endpoint '$EndPoint'"
 	Add-Type -AssemblyName System.Web
-	$URL = "https://{0}/api/{1}/" -f $script:ccnsBaseURI, $EndPoint
+	$URL = "https://{0}/api/{1}/{2}" -f $script:ccnsBaseURI, $EndPoint, $ID
 
 	$Request = [System.UriBuilder]($URL)
 	$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty)
@@ -73,9 +60,8 @@ Function Update-CCNSObject {
     try {
 
         Write-Verbose "Hitting URL '$($Request.Uri)'"
-        Write-Verbose "Making following changes:"
-        Write-Verbose "$obj"
-        $res = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Put -Headers $Headers -ContentType 'application/json' -Body $obj
+        Write-Verbose "Deleting following ID: '$ID'"
+        $res = Invoke-RestMethod -Uri "$($Request.Uri)" -Method Delete -Headers $Headers -ContentType 'application/json'
     
     }
     catch {

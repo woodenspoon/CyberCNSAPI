@@ -15,6 +15,10 @@ The object returned is usually a list of properties, depending on the query.
 
 The API Endpoint to call, see LINK section in HELP.
 
+.PARAMETER Params
+
+Any additional parameters, like IDs and such, see LINK section in HELP.
+
 .PARAMETER Conditions
 
 Any condition to restrict the records returned, in ElasticSearch format, see LINK section in HELP.
@@ -37,11 +41,11 @@ https://cybercns.atlassian.net/wiki/spaces/Verison2/pages/1755676675/CyberCNS+AP
 
 .EXAMPLE
 
-Get-CCNSObject -Endpoint 'company/'
+Get-CCNSObject -Endpoint 'company'
 
 .EXAMPLE
 
-Get-CCNSObject -Endpoint 'company/' -Conditions '{"query": {"bool":{"must": [{"exists": {"field": "description"}}], "must_not": [{"exists": {"field": "companyRef"}}]}}}'
+Get-CCNSObject -Endpoint 'company' -Conditions '{"query": {"bool":{"must": [{"exists": {"field": "description"}}], "must_not": [{"exists": {"field": "companyRef"}}]}}}'
 
 #>
 Function Get-CCNSObject {
@@ -49,6 +53,8 @@ Function Get-CCNSObject {
 	Param (
 		[Parameter(Mandatory)]
 		[string]$Endpoint,
+
+		[string]$Params = '',
 
 		[string]$Conditions,
 
@@ -65,9 +71,9 @@ Function Get-CCNSObject {
 	}
 		
 	# Run the EndPoint paged calls and collect the results
-	Write-Verbose "Executing endpoint '$EndPoint'"
+	Write-Verbose "Executing GET on endpoint '$EndPoint'"
 	Add-Type -AssemblyName System.Web
-	$URL = "https://{0}/api/{1}" -f $script:ccnsBaseURI, $EndPoint
+	$URL = "https://{0}/api/{1}/{2}" -f $script:ccnsBaseURI, $EndPoint, $Params
 
 	$Request = [System.UriBuilder]($URL)
 	$Parameters = [System.Web.HttpUtility]::ParseQueryString([String]::Empty)
